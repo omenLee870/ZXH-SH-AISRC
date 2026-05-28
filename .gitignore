@@ -1,0 +1,10 @@
+# Ignored local Keil MDK project directory
+/Templates/PY32F072Exx_Templates/MDK-ARM/
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.swp
+*.tmp
+Thumbs.db
+Desktop.ini
