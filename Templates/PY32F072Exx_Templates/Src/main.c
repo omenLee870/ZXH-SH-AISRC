@@ -44,15 +44,31 @@ static void APP_SystemClockConfig(void);
   */
 int main(void)
 {
-  /* Reset of all peripherals, Initializes the Systick. */
-  HAL_Init();
-  
-  /* System clock configuration */
-  APP_SystemClockConfig();
+    /* Reset of all peripherals, Initializes the Systick. */
+    HAL_Init();
+    
+    /* System clock configuration */
+    APP_SystemClockConfig();
 
-  while (1)
-  {
-  }
+    /* 使能 GPIOB 时钟 */
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    /* 配置 PB0 为推挽输出，初始拉高 */
+        GPIO_InitStruct.Pin   = GPIO_PIN_0;
+        GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+        GPIO_InitStruct.Pull  = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        /* 拉高 PB0 */
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+
+    while (1)
+    {
+        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);  /* 翻转 PB0 */
+        HAL_Delay(1000);                          /* 延时 1000ms → 周期 1 秒 */
+    }
 }
 
 /**
