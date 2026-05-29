@@ -31,6 +31,10 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "py32f072e_it.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+extern void xPortSysTickHandler(void);
 
 /* Private includes ----------------------------------------------------------*/
 /* Private typedef -----------------------------------------------------------*/
@@ -71,8 +75,9 @@ void HardFault_Handler(void)
 /**
   * @brief This function handles Pendable request for system service.
   */
-// void PendSV_Handler(void)
+// void SVC_Handler(void)
 // {
+//     vPortSVCHandler();
 // }
 
 /**
@@ -80,7 +85,15 @@ void HardFault_Handler(void)
   */
 void SysTick_Handler(void)
 {
-  HAL_IncTick();
+#if (INCLUDE_xTaskGetSchedulerState == 1)
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
+    {
+#endif
+        xPortSysTickHandler();
+#if (INCLUDE_xTaskGetSchedulerState == 1)
+    }
+#endif
+    HAL_IncTick();    /* 保留 HAL 的 tick 计数，HAL_Delay 依赖它 */
 }
 
 /******************************************************************************/

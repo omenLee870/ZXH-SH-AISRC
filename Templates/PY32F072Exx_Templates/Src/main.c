@@ -31,6 +31,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "app.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define LOG_TAG "main"
 
@@ -40,6 +42,37 @@
 /* Private macro -------------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
 static void APP_SystemClockConfig(void);
+
+/* ===== FreeRTOS 任务句柄声明 ===== */
+static TaskHandle_t AppStartTaskHandle = NULL;
+
+/* ===== 心跳灯任务 ===== */
+static void App_LedTask(void *pvParameters)
+{
+    (void)pvParameters;
+    while (1)
+    {
+        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+        vTaskDelay(500);    /**< RTOS 延时 500ms，不阻塞 CPU */
+    }
+}
+
+/* ===== 启动任务：负责创建所有子任务 ===== */
+static void App_StartTask(void *pvParameters)
+{
+    LOG_INFO("FreeRTOS started, creating application tasks...");
+
+   /* 创建心跳灯任务 */
+    BaseType_t ret = xTaskCreate(App_LedTask, "LED", 128, NULL, 1, NULL);
+    if (ret != pdPASS)
+    {
+        LOG_ERR("Failed to create LED task!");
+    }
+
+    /* 启动任务使命完成，删除自己 */
+    LOG_DBG("Start task self-deleting");
+    vTaskDelete(NULL);
+}
 
 /**
   * @brief  Main program.
@@ -67,14 +100,20 @@ int main(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    LOG_DBG("PB0 GPIO configured as heart-beat LED");
-    while (1)
+    /* 创建启动任务，然后开启调度器 */
+    BaseType_t ret = xTaskCreate(App_StartTask, "Start", 256, NULL, 1, &AppStartTaskHandle);
+    if (ret != pdPASS)
     {
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);  /* 翻转 PB0 */
-        LOG_INFO("PB0 toggled");
-        LOG_INFO_TAG(LOG_TAG, "TAG PB0 toggled");
-        HAL_Delay(1000);                          /* 延时 1000ms → 周期 1 秒 */
+        LOG_ERR("Failed to create start task");
+        APP_ErrorHandler();
     }
+
+    LOG_INFO("Starting FreeRTOS scheduler...");
+    vTaskStartScheduler();
+
+    /* 调度器不会返回，如果到这里说明出错了 */
+    LOG_ERR("Scheduler returned!");
+    while (1){}
 }
 
 /**
@@ -87,6 +126,8 @@ static void APP_SystemClockConfig(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
+  
+  
   /* Oscillator configuration */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE | RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_LSE; /* Select oscillator HSE, HSI, LSI, LSE */
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;                          /* Enable HSI */

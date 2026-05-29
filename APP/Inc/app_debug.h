@@ -30,7 +30,7 @@
 /* 日志等级枚举                                                       */
 /* 数值越大越详细，LOG_ACTIVE_LEVEL 只输出 <= 自己的等级              */
 /* ------------------------------------------------------------------ */
-#define LOG_LEVEL_NONE          0   /**< 关闭所有输出                   */
+#define LOG_LEVEL_NONE          0   /**< 关闭所有输出                    */
 #define LOG_LEVEL_ERR           1   /**< 仅致命错误                     */
 #define LOG_LEVEL_WARN          2   /**< 错误 + 警告                    */
 #define LOG_LEVEL_INFO          3   /**< 错误 + 警告 + 运行信息         */
