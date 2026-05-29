@@ -3,5 +3,7 @@
 
 #include "app_uart.h"
 #include "app_debug.h"
+#include "app_fault.h"
+#include "app_task.h"
 
 #endif /* __APP_H__ */

@@ -43,37 +43,6 @@
 /* Private function prototypes -----------------------------------------------*/
 static void APP_SystemClockConfig(void);
 
-/* ===== FreeRTOS 任务句柄声明 ===== */
-static TaskHandle_t AppStartTaskHandle = NULL;
-
-/* ===== 心跳灯任务 ===== */
-static void App_LedTask(void *pvParameters)
-{
-    (void)pvParameters;
-    while (1)
-    {
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
-        vTaskDelay(500);    /**< RTOS 延时 500ms，不阻塞 CPU */
-    }
-}
-
-/* ===== 启动任务：负责创建所有子任务 ===== */
-static void App_StartTask(void *pvParameters)
-{
-    LOG_INFO("FreeRTOS started, creating application tasks...");
-
-   /* 创建心跳灯任务 */
-    BaseType_t ret = xTaskCreate(App_LedTask, "LED", 128, NULL, 1, NULL);
-    if (ret != pdPASS)
-    {
-        LOG_ERR("Failed to create LED task!");
-    }
-
-    /* 启动任务使命完成，删除自己 */
-    LOG_DBG("Start task self-deleting");
-    vTaskDelete(NULL);
-}
-
 /**
   * @brief  Main program.
   * @retval int
@@ -101,18 +70,13 @@ int main(void)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
     /* 创建启动任务，然后开启调度器 */
-    BaseType_t ret = xTaskCreate(App_StartTask, "Start", 256, NULL, 1, &AppStartTaskHandle);
-    if (ret != pdPASS)
-    {
-        LOG_ERR("Failed to create start task");
-        APP_ErrorHandler();
-    }
+    App_TaskCreate();
 
     LOG_INFO("Starting FreeRTOS scheduler...");
     vTaskStartScheduler();
 
     /* 调度器不会返回，如果到这里说明出错了 */
-    LOG_ERR("Scheduler returned!");
+    APP_ErrorHandler();
     while (1){}
 }
 
@@ -170,9 +134,10 @@ static void APP_SystemClockConfig(void)
   */
 void APP_ErrorHandler(void)
 {
-  while (1)
-  {
-  }
+    LOG_ERR("An error has occurred! Halting system.");
+    while (1)
+    {
+    }
 }
 
 #ifdef  USE_FULL_ASSERT
