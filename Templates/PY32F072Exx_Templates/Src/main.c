@@ -30,6 +30,9 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "app.h"
+
+#define LOG_TAG "main"
 
 /* Private define ------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
@@ -50,23 +53,26 @@ int main(void)
     /* System clock configuration */
     APP_SystemClockConfig();
 
-    /* 使能 GPIOB 时钟 */
+    /* 使能所有 GPIO 端口时钟 */
     __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    /* 初始化调试串口 */
+    App_UART_Init();
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     /* 配置 PB0 为推挽输出，初始拉高 */
-        GPIO_InitStruct.Pin   = GPIO_PIN_0;
-        GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull  = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin   = GPIO_PIN_0;
+    GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull  = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-        /* 拉高 PB0 */
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
-
+    LOG_DBG("PB0 GPIO configured as heart-beat LED");
     while (1)
     {
         HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);  /* 翻转 PB0 */
+        LOG_INFO("PB0 toggled");
+        LOG_INFO_TAG(LOG_TAG, "TAG PB0 toggled");
         HAL_Delay(1000);                          /* 延时 1000ms → 周期 1 秒 */
     }
 }
@@ -98,6 +104,8 @@ static void APP_SystemClockConfig(void)
   /*RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL2;*/
   /* Configure oscillator */
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+	  
+  
   {
     APP_ErrorHandler();
   }
