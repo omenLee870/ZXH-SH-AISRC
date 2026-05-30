@@ -11,6 +11,16 @@
 #include "voice_uart.h"
 #include "app_debug.h"
 
+#define LOG_TAG "voice_uart"
+#define VOICE_UART_PORT USART2
+#define VOICE_UART_BAUDRATE     9600
+#define VOICE_UART_GPIO_PORT    GPIOA
+#define VOICE_UART_TX_PIN       GPIO_PIN_2
+#define VOICE_UART_RX_PIN       GPIO_PIN_3
+#define VOICE_UART_GPIO_AF      GPIO_AF1_USART2
+#define VOICE_UART_IRQ          USART2_IRQn
+
+
 /* ===== 模块级变量 ===== */
 static UART_HandleTypeDef VoiceUartHandle;
 static uint8_t  rxBuffer[VOICE_FRAME_LEN];                      /**< 接收缓冲区            */
@@ -27,24 +37,24 @@ void Voice_UART_Init(void)
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
     /******************** 使能外设时钟 ********************/
-    __HAL_RCC_USART4_CLK_ENABLE();
+    __HAL_RCC_USART2_CLK_ENABLE();
 
     /******************** 配置 USART4 TX: PA0 ********************/
     GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;         /**< 复用推挽输出   */
     GPIO_InitStruct.Pull      = GPIO_PULLUP;              /**< 上拉（空闲高） */
     GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;     /**< 高速驱动       */
 
-    GPIO_InitStruct.Pin       = GPIO_PIN_0;               /**< PA0            */
-    GPIO_InitStruct.Alternate = GPIO_AF4_USART4;          /**< AF4 → USART4   */
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin       = VOICE_UART_TX_PIN;               /** PA0            */
+    GPIO_InitStruct.Alternate = VOICE_UART_GPIO_AF;          /**< AF4 → USART4   */
+    HAL_GPIO_Init(VOICE_UART_GPIO_PORT, &GPIO_InitStruct);
 
     /******************** 配置 USART4 RX: PA1 ********************/
-    GPIO_InitStruct.Pin       = GPIO_PIN_1;               /**< PA1            */
-    GPIO_InitStruct.Alternate = GPIO_AF4_USART4;          /**< AF4 → USART4   */
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin       = VOICE_UART_RX_PIN;               /**< PA1            */
+    GPIO_InitStruct.Alternate = VOICE_UART_GPIO_AF;          /**< AF4 → USART4   */
+    HAL_GPIO_Init(VOICE_UART_GPIO_PORT, &GPIO_InitStruct);
 
     /******************** 配置 USART4 参数 ********************/
-    VoiceUartHandle.Instance          = USART4;
+    VoiceUartHandle.Instance          = VOICE_UART_PORT;
     VoiceUartHandle.Init.BaudRate     = VOICE_UART_BAUDRATE;/**< 9600 bps       */
     VoiceUartHandle.Init.WordLength   = UART_WORDLENGTH_8B;/**< 8 位数据       */
     VoiceUartHandle.Init.StopBits     = UART_STOPBITS_1;   /**< 1 位停止       */
@@ -69,8 +79,8 @@ void Voice_UART_Init(void)
     /** @note  使能 NVIC 上的 USART4 中断，
      *         然后在 ISR 中每收到一字节就重新触发下一次接收
      */
-    HAL_NVIC_SetPriority(USART3_4_IRQn, 2, 0);
-    HAL_NVIC_EnableIRQ(USART3_4_IRQn);
+    HAL_NVIC_SetPriority(VOICE_UART_IRQ, 2, 0);
+    HAL_NVIC_EnableIRQ(VOICE_UART_IRQ);
 
     /** @note  HAL_UART_Receive_IT 启动首次单字节接收，
      *         收完触发 HAL_UART_RxCpltCallback
@@ -215,7 +225,7 @@ QueueHandle_t Voice_GetRxQueue(void)
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     /******************** 仅处理语音 UART ********************/
-    if (huart->Instance != USART4)
+    if (huart->Instance != VOICE_UART_PORT)
     {
         return;
     }
@@ -301,7 +311,7 @@ void EXTI4_15_IRQHandler(void)
  * @note   覆盖启动文件中的 WEAK 弱符号
  *         USART4 收发中断 → HAL_UART_IRQHandler → HAL_UART_RxCpltCallback
  */
-void USART3_4_IRQHandler(void)
+void USART2_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&VoiceUartHandle);
 }

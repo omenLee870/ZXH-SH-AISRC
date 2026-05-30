@@ -64,14 +64,6 @@ int main(void)
     /* 初始化语音模块 */
     App_VoiceInit();
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    /* 配置 PB0 为推挽输出，初始拉高 */
-    GPIO_InitStruct.Pin   = GPIO_PIN_0;
-    GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull  = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
     /* 创建启动任务，然后开启调度器 */
     App_TaskCreate();
 

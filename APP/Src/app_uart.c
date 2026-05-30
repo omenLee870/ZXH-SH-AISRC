@@ -13,6 +13,16 @@
 
 #if DBG_ENABLE
 
+#define LOG_TAG "uart"
+#define UART_PORT USART4
+#define UART_BAUDRATE 115200
+#define UART_GPIO_PORT GPIOA
+#define UART_TX_PIN GPIO_PIN_0
+#define UART_RX_PIN GPIO_PIN_1
+#define UART_GPIO_AF GPIO_AF4_USART4
+
+
+
 UART_HandleTypeDef DebugUartHandle;
 
 /**
@@ -28,25 +38,25 @@ void App_UART_Init(void)
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
     /******************** 使能外设时钟 ********************/
-    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_USART4_CLK_ENABLE();
 
     /******************** 配置 USART1 TX: PB6 ********************/
     GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;         /**< 复用推挽输出   */
     GPIO_InitStruct.Pull      = GPIO_PULLUP;              /**< 上拉（空闲高） */
     GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;     /**< 高速驱动       */
 
-    GPIO_InitStruct.Pin       = GPIO_PIN_6;               /**< PB6            */
-    GPIO_InitStruct.Alternate = GPIO_AF0_USART1;          /**< AF0 → USART1   */
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin       = UART_TX_PIN;               /**< PB6            */
+    GPIO_InitStruct.Alternate = UART_GPIO_AF;          /**< AF0 → USART1   */
+    HAL_GPIO_Init(UART_GPIO_PORT, &GPIO_InitStruct);
 
     /******************** 配置 USART1 RX: PB7 ********************/
-    GPIO_InitStruct.Pin       = GPIO_PIN_7;               /**< PB7            */
-    GPIO_InitStruct.Alternate = GPIO_AF0_USART1;          /**< AF0 → USART1   */
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin       = UART_RX_PIN;               /**< PB7            */
+    GPIO_InitStruct.Alternate = UART_GPIO_AF;          /**< AF0 → USART1   */
+    HAL_GPIO_Init(UART_GPIO_PORT, &GPIO_InitStruct);
 
     /******************** 配置 USART1 参数 ********************/
-    DebugUartHandle.Instance          = USART1;
-    DebugUartHandle.Init.BaudRate     = 115200;            /**< 波特率         */
+    DebugUartHandle.Instance          = UART_PORT;
+    DebugUartHandle.Init.BaudRate     = UART_BAUDRATE; /**< 波特率         */
     DebugUartHandle.Init.WordLength   = UART_WORDLENGTH_8B;/**< 8 位数据       */
     DebugUartHandle.Init.StopBits     = UART_STOPBITS_1;   /**< 1 位停止       */
     DebugUartHandle.Init.Parity       = UART_PARITY_NONE;  /**< 无校验         */

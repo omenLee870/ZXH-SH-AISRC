@@ -9,6 +9,7 @@
 
 #define APP_START_TASK_PRIORITY         2U      /* 启动任务优先级，创建完业务任务后会删除自己。 */
 #define APP_LED_TASK_PRIORITY           1U      /* LED 心跳任务优先级，低于启动任务。 */
+#define APP_VOICE_TASK_PRIORITY         2U      /* 语音任务优先级。*/
 
 #define APP_LED_PERIOD_MS               500U    /* PB0 心跳灯翻转周期，单位 ms。 */
 
@@ -38,7 +39,6 @@ void App_TaskCreate(void)
     if (ret != pdPASS)
     {
         APP_ErrorHandler();
-        
     }
 }
 
@@ -58,24 +58,24 @@ static void App_StartTask(void *pvParameters)
     LOG_INFO("FreeRTOS started, creating application tasks...");
 
     /******************** 创建心跳灯任务 ********************/
-    ret = xTaskCreate(App_LedTask,
-                      "LED",
-                      APP_LED_TASK_STACK_WORDS,
-                      NULL,
-                      APP_LED_TASK_PRIORITY,
-                      NULL);
+    // ret = xTaskCreate(App_LedTask,
+    //                   "LED",
+    //                   APP_LED_TASK_STACK_WORDS,
+    //                   NULL,
+    //                   APP_LED_TASK_PRIORITY,
+    //                   NULL);
 
-    if (ret != pdPASS)
-    {
-        APP_ErrorHandler();
-    }
+    // if (ret != pdPASS)
+    // {
+    //     APP_ErrorHandler();
+    // }
 
     /******************** 创建语音处理任务 ********************/
     ret = xTaskCreate(App_VoiceTask, 
                      "Voice",
                       256,
                       NULL,
-                      2,
+                      APP_VOICE_TASK_PRIORITY,
                       NULL);
     if(ret != pdPASS)
     {
