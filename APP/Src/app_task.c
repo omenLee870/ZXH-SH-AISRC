@@ -124,8 +124,8 @@ static void App_VoiceTask(void *pvParameters)
         {
             LOG_INFO("Voice cmd: 0x%02X", frame.cmd);
 
-            /* 根据命令码回复成功应答 */
-            Voice_SendFrame(frame.cmd, VOICE_RESP_OK, NULL);
+            /* 应答 */
+            App_VoiceProcessFrame(&frame);
         }
     }
 }

@@ -61,8 +61,8 @@ int main(void)
 
     /* 初始化调试串口 */
     App_UART_Init();
-    /* 初始化语音串口 */
-    Voice_UART_Init();
+    /* 初始化语音模块 */
+    App_VoiceInit();
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     /* 配置 PB0 为推挽输出，初始拉高 */
