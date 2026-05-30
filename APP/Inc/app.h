@@ -5,5 +5,6 @@
 #include "app_debug.h"
 #include "app_fault.h"
 #include "app_task.h"
+#include "voice_uart.h"
 
 #endif /* __APP_H__ */

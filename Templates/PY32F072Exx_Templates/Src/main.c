@@ -56,10 +56,13 @@ int main(void)
     APP_SystemClockConfig();
 
     /* 使能所有 GPIO 端口时钟 */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
     /* 初始化调试串口 */
     App_UART_Init();
+    /* 初始化语音串口 */
+    Voice_UART_Init();
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     /* 配置 PB0 为推挽输出，初始拉高 */

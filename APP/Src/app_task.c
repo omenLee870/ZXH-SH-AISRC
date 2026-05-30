@@ -1,8 +1,8 @@
-#include "app_task.h"
 #include "main.h"
-#include "app_fault.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "app.h"
+#include "queue.h"
 
 #define APP_START_TASK_STACK_WORDS      192U    /* 启动任务栈，单位 word，Cortex-M0+ 上 1 word = 4 字节。 */
 #define APP_LED_TASK_STACK_WORDS        96U     /* LED 任务栈，单位 word，仅翻转 GPIO 和延时，保持较小即可。 */
@@ -16,8 +16,9 @@ static TaskHandle_t s_appStartTaskHandle = NULL;    /* 启动任务句柄，当�
 
 static void App_StartTask(void *pvParameters);
 static void App_LedTask(void *pvParameters);
+static void App_VoiceTask(void *pvParameters);
 
-/**
+/**                                                                                                                                         
  * @brief  创建应用启动任务。
  * @retval 无。
  * @note   该函数在 main() 中、vTaskStartScheduler() 之前调用。
@@ -37,6 +38,7 @@ void App_TaskCreate(void)
     if (ret != pdPASS)
     {
         APP_ErrorHandler();
+        
     }
 }
 
@@ -53,6 +55,9 @@ static void App_StartTask(void *pvParameters)
 
     (void)pvParameters;
 
+    LOG_INFO("FreeRTOS started, creating application tasks...");
+
+    /******************** 创建心跳灯任务 ********************/
     ret = xTaskCreate(App_LedTask,
                       "LED",
                       APP_LED_TASK_STACK_WORDS,
@@ -61,6 +66,18 @@ static void App_StartTask(void *pvParameters)
                       NULL);
 
     if (ret != pdPASS)
+    {
+        APP_ErrorHandler();
+    }
+
+    /******************** 创建语音处理任务 ********************/
+    ret = xTaskCreate(App_VoiceTask, 
+                     "Voice",
+                      256,
+                      NULL,
+                      2,
+                      NULL);
+    if(ret != pdPASS)
     {
         APP_ErrorHandler();
     }
@@ -82,5 +99,33 @@ static void App_LedTask(void *pvParameters)
     {
         HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
         vTaskDelay(pdMS_TO_TICKS(APP_LED_PERIOD_MS));
+    }
+}
+
+/* ===== 语音处理任务 ===== */
+/**
+ * @brief  语音处理任务。
+* @param  pvParameters FreeRTOS 任务参数，当前未使用。
+* @retval 无。
+* @note   该任务负责语音帧的接收和处理。
+*         语音帧通过队列从 UART 接收，处理完成后回复成功应答。
+*/
+static void App_VoiceTask(void *pvParameters)
+{
+    (void)pvParameters;
+    VoiceFrame_t frame;
+
+    LOG_INFO("Voice task started");
+
+    while (1)
+    {
+        /* 阻塞等待语音帧（ISR 通过队列扔进来的） */
+        if (xQueueReceive(Voice_GetRxQueue(), &frame, portMAX_DELAY) == pdPASS)
+        {
+            LOG_INFO("Voice cmd: 0x%02X", frame.cmd);
+
+            /* 根据命令码回复成功应答 */
+            Voice_SendFrame(frame.cmd, VOICE_RESP_OK, NULL);
+        }
     }
 }
