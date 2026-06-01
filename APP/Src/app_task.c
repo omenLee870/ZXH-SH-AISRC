@@ -6,10 +6,13 @@
 
 #define APP_START_TASK_STACK_WORDS      192U    /* 启动任务栈，单位 word，Cortex-M0+ 上 1 word = 4 字节。 */
 #define APP_LED_TASK_STACK_WORDS        96U     /* LED 任务栈，单位 word，仅翻转 GPIO 和延时，保持较小即可。 */
+#define APP_VOICE_TASK_STACK_WORDS      256U    /* 语音任务栈。                 */
+#define APP_VEHICLE_TASK_STACK_WORDS    256U    /* 车辆控制栈。 */
 
 #define APP_START_TASK_PRIORITY         2U      /* 启动任务优先级，创建完业务任务后会删除自己。 */
 #define APP_LED_TASK_PRIORITY           1U      /* LED 心跳任务优先级，低于启动任务。 */
 #define APP_VOICE_TASK_PRIORITY         2U      /* 语音任务优先级。*/
+#define APP_VEHICLE_TASK_PRIORITY       3U      /* 车辆控制（最高）。← 新增    */
 
 #define APP_LED_PERIOD_MS               500U    /* PB0 心跳灯翻转周期，单位 ms。 */
 
@@ -18,6 +21,7 @@ static TaskHandle_t s_appStartTaskHandle = NULL;    /* 启动任务句柄，当�
 static void App_StartTask(void *pvParameters);
 static void App_LedTask(void *pvParameters);
 static void App_VoiceTask(void *pvParameters);
+static void App_VehicleTask(void *pvParameters);
 
 /**                                                                                                                                         
  * @brief  创建应用启动任务。
@@ -73,7 +77,7 @@ static void App_StartTask(void *pvParameters)
     /******************** 创建语音处理任务 ********************/
     ret = xTaskCreate(App_VoiceTask, 
                      "Voice",
-                      256,
+                      APP_VOICE_TASK_STACK_WORDS,
                       NULL,
                       APP_VOICE_TASK_PRIORITY,
                       NULL);
@@ -82,6 +86,20 @@ static void App_StartTask(void *pvParameters)
         APP_ErrorHandler();
     }
 
+    /******************** 创建车辆控制任务 ********************/
+    ret = xTaskCreate(App_VehicleTask,
+                      "Vehicle",
+                      APP_VEHICLE_TASK_STACK_WORDS,
+                      NULL,
+                      APP_VEHICLE_TASK_PRIORITY,
+                      NULL);
+    if (ret != pdPASS)
+    {
+        LOG_ERR("Failed to create Vehicle task!");
+        APP_ErrorHandler();
+    }
+
+    LOG_DBG("Start task self-deleting");
     vTaskDelete(NULL);
 }
 
@@ -126,6 +144,40 @@ static void App_VoiceTask(void *pvParameters)
 
             /* 应答 */
             App_VoiceProcessFrame(&frame);
+        }
+    }
+}
+
+/* ===== VehicleTask ===== */
+
+/**
+ * @brief  车辆控制任务。
+ * @param  pvParameters 未使用。
+ * @note   阻塞等待请求 → 执行 → 任务通知回结果 → 循环。
+ */
+void App_VehicleTask(void *pvParameters)
+{
+    AppVehicleRequest_t req;
+    AppVehicleResult_t  result;
+
+    (void)pvParameters;
+
+    LOG_INFO("Vehicle task started");
+
+    while (1)
+    {
+        /** @brief  阻塞等请求，无请求时 CPU 让给其他任务。 */
+        if (xQueueReceive(Vehicle_GetRxQueue(), &req, portMAX_DELAY) == pdPASS)
+        {
+            result = App_VehicleExecute(req.cmd);
+
+            /** @brief  通过任务通知，把结果定向发给请求方。 */
+            if (req.requester != NULL)
+            {
+                xTaskNotify(req.requester,
+                            (uint32_t)result,
+                            eSetValueWithOverwrite);
+            }
         }
     }
 }

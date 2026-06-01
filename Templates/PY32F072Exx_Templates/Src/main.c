@@ -63,6 +63,7 @@ int main(void)
     App_UART_Init();
     /* 初始化语音模块 */
     App_VoiceInit();
+    App_VehicleInit();
 
     /* 创建启动任务，然后开启调度器 */
     App_TaskCreate();

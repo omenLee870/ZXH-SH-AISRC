@@ -8,6 +8,7 @@
 
 #include "app_voice.h"
 #include "app_debug.h"
+#include "app_vehicle.h"
 
 #define LOG_TAG "voice"
 
@@ -23,78 +24,98 @@ void App_VoiceInit(void)
     Voice_WakePin_Init();
 }
 
+/* ===== 语音命令 → 控制命令查表映射 ===== */
 /**
- * @brief  执行车辆控制命令。
- * @param  cmd 语音命令码。
- * @retval AppVoiceResult_t 执行结果。
- * @note   当前先保留为业务映射入口，
- *         后续这里对接 CAN 发送、状态确认和超时判断。
+ * @brief  映射表：语音芯片原始命令码 → 内部统一控制命令。
+ * @note   增删命令只需在此数组增删一行，无需改动其他代码。
  */
-static AppVoiceResult_t App_VoiceExecuteVehicleCmd(uint8_t cmd)
+static const struct
 {
-    switch (cmd)
+    uint8_t             voiceCmd;       /* 语音芯片发来的原始值。       */
+    AppVehicleCommand_t vehicleCmd;     /* 内部统一命令编号。           */
+} s_voiceCmdMap[] =
+{
+    { APP_VOICE_CMD_WAKEUP,          APP_VEHICLE_CMD_WAKEUP          },
+    { APP_VOICE_CMD_WAKE_WORD,       APP_VEHICLE_CMD_WAKE_WORD       },
+    { APP_VOICE_CMD_WASHER_ON,       APP_VEHICLE_CMD_WASHER_ON       },
+    { APP_VOICE_CMD_LEFT_TURN_ON,    APP_VEHICLE_CMD_LEFT_TURN_ON    },
+    { APP_VOICE_CMD_LEFT_TURN_OFF,   APP_VEHICLE_CMD_LEFT_TURN_OFF   },
+    { APP_VOICE_CMD_RIGHT_TURN_ON,   APP_VEHICLE_CMD_RIGHT_TURN_ON   },
+    { APP_VOICE_CMD_RIGHT_TURN_OFF,  APP_VEHICLE_CMD_RIGHT_TURN_OFF  },
+    { APP_VOICE_CMD_LOW_BEAM_ON,     APP_VEHICLE_CMD_LOW_BEAM_ON     },
+    { APP_VOICE_CMD_LOW_BEAM_OFF,    APP_VEHICLE_CMD_LOW_BEAM_OFF    },
+    { APP_VOICE_CMD_HIGH_BEAM_ON,    APP_VEHICLE_CMD_HIGH_BEAM_ON    },
+    { APP_VOICE_CMD_HIGH_BEAM_OFF,   APP_VEHICLE_CMD_HIGH_BEAM_OFF   },
+    { APP_VOICE_CMD_WIPER_OFF,       APP_VEHICLE_CMD_WIPER_OFF       },
+    { APP_VOICE_CMD_WIPER_INT,       APP_VEHICLE_CMD_WIPER_INTERVAL  },
+    { APP_VOICE_CMD_WIPER_ON,        APP_VEHICLE_CMD_WIPER_ON        },
+    { APP_VOICE_CMD_WIPER_HIGH,      APP_VEHICLE_CMD_WIPER_HIGH      },
+};
+
+#define VOICE_CMD_MAP_SIZE  (sizeof(s_voiceCmdMap) / sizeof(s_voiceCmdMap[0]))
+
+/**
+ * @brief  查表：语音命令 → 控制命令。
+ * @param  voiceCmd  语音芯片命令码（0x00~0x0D）。
+ * @param  pOut      输出：对应的车辆控制命令。
+ * @return 1 = 找到, 0 = 未找到。
+ */
+static uint8_t App_VoiceCmdMap(uint8_t voiceCmd, AppVehicleCommand_t *pOut)
+{
+    uint8_t i;
+
+    if (pOut == NULL)
     {
-        case APP_VOICE_CMD_WAKEUP:
-            return APP_VOICE_RESULT_OK;
-        case APP_VOICE_CMD_WAKE_WORD:
-            return APP_VOICE_RESULT_OK;
-
-        case APP_VOICE_CMD_WASHER_ON:
-        case APP_VOICE_CMD_LEFT_TURN_ON:
-        case APP_VOICE_CMD_LEFT_TURN_OFF:
-        case APP_VOICE_CMD_RIGHT_TURN_ON:
-        case APP_VOICE_CMD_RIGHT_TURN_OFF:
-        case APP_VOICE_CMD_LOW_BEAM_ON:
-        case APP_VOICE_CMD_HIGH_BEAM_ON:
-        case APP_VOICE_CMD_HIGH_BEAM_OFF:
-        case APP_VOICE_CMD_WIPER_OFF:
-        case APP_VOICE_CMD_WIPER_INT:
-        case APP_VOICE_CMD_WIPER_ON:
-        case APP_VOICE_CMD_WIPER_HIGH:
-            /* TODO: 后续替换为 CAN 控制函数，并根据 CAN 应答返回 OK/FAIL。 */
-            return APP_VOICE_RESULT_OK;
-
-        case APP_VOICE_CMD_LOW_BEAM_OFF:
-            /* 示例：如果关闭大灯需要安全条件判断，可在这里返回 SAFETY。 */
-            return APP_VOICE_RESULT_OK;
-
-        default:
-            LOG_WARN("Unknown voice cmd: 0x%02X", cmd);
-            return APP_VOICE_RESULT_FAIL;
+        return 0U;
     }
+
+    for (i = 0; i < VOICE_CMD_MAP_SIZE; i++)
+    {
+        LOG_INFO("voiceTable[%d] table_voiceCmd: 0x%02X, table_voiceCmd: 0x%02X", i, s_voiceCmdMap[i].voiceCmd, voiceCmd);
+        if (s_voiceCmdMap[i].voiceCmd == voiceCmd)
+        {
+            *pOut = s_voiceCmdMap[i].vehicleCmd;
+            return 1U;
+        }
+    }
+
+    return 0U;
 }
 
 /**
- * @brief  根据执行结果回复语音模块。
- * @param  cmd      原始语音命令码。
- * @param  result   车辆控制执行结果。
- * @retval 无。
- * @note   Voice_SendFrame() 内部会组帧并调用 Voice_CalcChecksum() 生成校验值。
+ * @brief  控制结果 → 协议应答码映射。
+ * @param  result  VehicleTask 返回的执行结果。
+ * @return 协议应答码（VOICE_RESP_OK / FAIL / SAFETY）。
  */
-static void App_VoiceReplyResult(uint8_t cmd, AppVoiceResult_t result)
+static uint8_t App_VoiceMapRespCode(AppVehicleResult_t result)
 {
-    uint8_t respCode = VOICE_RESP_FAIL;
-
-    if (result == APP_VOICE_RESULT_OK)
+    if (result == APP_VEHICLE_RESULT_OK)
     {
-        respCode = VOICE_RESP_OK;
+        return VOICE_RESP_OK;
     }
-    else if (result == APP_VOICE_RESULT_SAFETY)
+    else if (result == APP_VEHICLE_RESULT_SAFETY)
     {
-        respCode = VOICE_RESP_SAFETY;
+        return VOICE_RESP_SAFETY;
     }
-
-    Voice_SendFrame(cmd, respCode, NULL);
+    else
+    {
+        return VOICE_RESP_FAIL;
+    }
 }
 
 /**
  * @brief  处理一帧语音识别命令。
  * @param  pFrame 语音 UART 层解析出的完整识别帧。
- * @retval 无。
+ * @note   流程：
+ *         1. 查表：语音命令码 → 内部统一控制命令
+ *         2. 委托 VehicleTask 执行（同步等待，最多 500ms）
+ *         3. 结果 → 应答码 → 回复语音芯片
  */
 void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
 {
-    AppVoiceResult_t result;
+    AppVehicleCommand_t vehicleCmd;
+    AppVehicleResult_t  result;
+    uint8_t             respCode;
 
     if (pFrame == NULL)
     {
@@ -103,6 +124,18 @@ void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
 
     LOG_INFO("Voice cmd: 0x%02X", pFrame->cmd);
 
-    result = App_VoiceExecuteVehicleCmd(pFrame->cmd);
-    App_VoiceReplyResult(pFrame->cmd, result);
+    /******************** ① 查表：语音命令 → 控制命令 ********************/
+    if (App_VoiceCmdMap(pFrame->cmd, &vehicleCmd) == 0U)
+    {
+        LOG_WARN("Unknown voice cmd: 0x%02X", pFrame->cmd);
+        Voice_SendFrame(pFrame->cmd, VOICE_RESP_FAIL, NULL);
+        return;
+    }
+
+    /******************** ② 委托 VehicleTask 执行（最多等 500ms） ********************/
+    result = App_ControlRequest(vehicleCmd, pdMS_TO_TICKS(500U));
+
+    /******************** ③ 结果 → 应答 → 回复语音芯片 ********************/
+    respCode = App_VoiceMapRespCode(result);
+    Voice_SendFrame(pFrame->cmd, respCode, NULL);
 }
