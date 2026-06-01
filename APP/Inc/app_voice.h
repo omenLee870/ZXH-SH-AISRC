@@ -14,6 +14,7 @@
 #include "voice_uart.h"
 
 /* ===== 语音识别命令码，对应协议表 A5 xx 00 00 00 00 00 checksum ===== */
+#define APP_VOICE_CMD_WAKEUP             0xF3U   /* 唤醒语音芯片。          */
 #define APP_VOICE_CMD_WAKE_WORD          0x00U   /* 你好盛昊/你好小通。     */
 #define APP_VOICE_CMD_WASHER_ON          0x01U   /* 打开雨刮喷水。          */
 #define APP_VOICE_CMD_LEFT_TURN_ON       0x02U   /* 打开左转灯。           */

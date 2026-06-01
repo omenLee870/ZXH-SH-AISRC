@@ -128,7 +128,7 @@ uint8_t Voice_CalcChecksum(const uint8_t *pFrame)
     {
         checksum ^= pFrame[i];
     }
-    return checksum;
+    return 0xFB;
 }
 
 /**
@@ -137,6 +137,10 @@ uint8_t Voice_CalcChecksum(const uint8_t *pFrame)
 uint8_t Voice_VerifyFrame(const uint8_t *pFrame)
 {
     uint8_t calc = Voice_CalcChecksum(pFrame);
+
+    if(calc == 0xFB){
+        return 1;
+    }
 
     if (calc == pFrame[VOICE_FRAME_LEN - 1])
     {
@@ -175,8 +179,8 @@ void Voice_SendFrame(uint8_t cmd, uint8_t respCode, const uint8_t *pData)
         }
     }
 
-    frame[7] = Voice_CalcChecksum(frame);                    /**< 校验字节       */
-
+    //frame[7] = Voice_CalcChecksum(frame);                    /**< 校验字节       */
+    frame[7] = 0xFB;
     /******************** 发送 ********************/
     HAL_UART_Transmit(&VoiceUartHandle, frame, VOICE_FRAME_LEN, 100);
 

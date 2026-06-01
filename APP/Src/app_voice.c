@@ -34,6 +34,8 @@ static AppVoiceResult_t App_VoiceExecuteVehicleCmd(uint8_t cmd)
 {
     switch (cmd)
     {
+        case APP_VOICE_CMD_WAKEUP:
+            return APP_VOICE_RESULT_OK;
         case APP_VOICE_CMD_WAKE_WORD:
             return APP_VOICE_RESULT_OK;
 
