@@ -8,5 +8,7 @@
 #include "voice_uart.h"
 #include "app_voice.h"
 #include "app_vehicle.h"
+#include "app_can.h"
+#include "app_can_proto.h"
 
 #endif /* __APP_H__ */

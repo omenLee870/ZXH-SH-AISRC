@@ -63,7 +63,10 @@ int main(void)
     App_UART_Init();
     /* 初始化语音模块 */
     App_VoiceInit();
+    /**/
     App_VehicleInit();
+    /*can 模块初始*/
+    APP_CAN_Init();
 
     /* 创建启动任务，然后开启调度器 */
     App_TaskCreate();
@@ -94,15 +97,15 @@ static void APP_SystemClockConfig(void)
 #if defined(RCC_HSIDIV_SUPPORT)
   RCC_OscInitStruct.HSIDiv = RCC_HSI_DIV1;                          /* HSI 1 frequency division */
 #endif
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_8MHz;  /* Configure HSI clock 8MHz */
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_24MHz;  /* Configure HSI clock 8MHz */
   RCC_OscInitStruct.HSEState = RCC_HSE_OFF;                         /* Close HSE */
   /*RCC_OscInitStruct.HSEFreq = RCC_HSE_16_32MHz;*/
   RCC_OscInitStruct.LSIState = RCC_LSI_OFF;                         /* Close LSI */
   RCC_OscInitStruct.LSEState = RCC_LSE_OFF;                         /* Close LSE */
   /*RCC_OscInitStruct.LSEDriver = RCC_LSEDRIVE_MEDIUM;*/
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_OFF;                     /* Close PLL */
-  /*RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_NONE;*/
-  /*RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL2;*/
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;                     /* Close PLL */
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL3;
   /* Configure oscillator */
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
 	  
@@ -117,7 +120,7 @@ static void APP_SystemClockConfig(void)
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;     /* AHB clock 1 division */
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;      /* APB clock 1 division */
   /* Configure clock source */
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     APP_ErrorHandler();
   }

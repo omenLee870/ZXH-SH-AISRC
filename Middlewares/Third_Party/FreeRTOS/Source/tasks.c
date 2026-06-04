@@ -3716,7 +3716,9 @@ static void prvCheckTasksWaitingTermination( void )
 
 #if ( configUSE_TRACE_FACILITY == 1 )
 
-    void vTaskGetInfo( TaskHandle_t xTask,
+    void vTaskGetInfo( Tas
+
+kHandle_t xTask,
                        TaskStatus_t * pxTaskStatus,
                        BaseType_t xGetFreeStackSpace,
                        eTaskState eState )

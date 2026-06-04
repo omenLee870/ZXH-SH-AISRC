@@ -11,6 +11,7 @@
 #include "app_vehicle.h"
 #include "app_debug.h"
 #include "queue.h"
+#include "app_can_proto.h"
 
 #define LOG_TAG "vehicle"
 
@@ -43,47 +44,97 @@ BaseType_t App_VehicleInit(void)
 /* ===== 执行命令 ===== */
 
 /**
- * @brief  执行车辆控制命令。
- * @param  cmd 内部统一命令编号。
- * @return 执行结果。
- * @note   TODO: CAN 模块完成后，替换为：
- *         1. 安全条件判断（车速、档位等）
- *         2. CAN 报文发送
- *         3. 等待 CAN 应答或超时
- *         当前暂时 10ms 后返回成功（模拟）。
+ * @brief  执行车辆控制命令
+ * @param  cmd 内部统一命令编号
+ * @return 执行结果
+ * @note   根据命令类型，组装雷迈协议 IVI_BCM 帧并通过 CAN 总线发出。
+ *
+ *         映射关系（内部命令 → CAN 信号）：
+ *         - 转向灯 → IVI_BCM Data[5] : LH_Turn/RH_Turn (2bit)
+ *         - 近光灯 → IVI_BCM Data[3] : Low_Beam (2bit)
+ *         - 远光灯 → IVI_BCM Data[3] : High_Beam (2bit)
+ *         - 雨刮   → IVI_BCM Data[6] : Front_Wiper (3bit)
+ *         - 洗涤   → IVI_BCM Data[2] : Wiper_Wash (2bit)
+ *
+ *         信号值约定（雷迈协议）：
+ *         0x0 = 无请求（默认）, 0x1 = ON/开启, 0x2 = OFF/关闭
+ *         雨刮多级: 0x1=关, 0x2=间歇, 0x3=低速, 0x4=高速
+ *
+ *         TODO: 后续增加安全条件判断（车速 > 0 时禁止某些操作）
+ *         TODO: 当前是事件驱动（每次操作发一帧），非 100ms 周期模式
  */
 AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 {
+uint8_t canData[8] = {0};           /**< 初始化为全 0x00（无请求） */
+
     switch (cmd)
     {
         case APP_VEHICLE_CMD_WAKEUP:
-            return APP_VEHICLE_RESULT_OK;
         case APP_VEHICLE_CMD_WAKE_WORD:
             return APP_VEHICLE_RESULT_OK;
 
+        /* ---------- 转向灯 → Data[5] ---------- */
         case APP_VEHICLE_CMD_LEFT_TURN_ON:
+            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_LH_TURN_POS);
+            break;
         case APP_VEHICLE_CMD_LEFT_TURN_OFF:
+            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_LH_TURN_POS);
+            break;
         case APP_VEHICLE_CMD_RIGHT_TURN_ON:
+            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_RH_TURN_POS);
+            break;
         case APP_VEHICLE_CMD_RIGHT_TURN_OFF:
+            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_RH_TURN_POS);
+            break;
+
+        /* ---------- 近光灯 → Data[3] ---------- */
         case APP_VEHICLE_CMD_LOW_BEAM_ON:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_LOW_BEAM_POS);
+            break;
         case APP_VEHICLE_CMD_LOW_BEAM_OFF:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_LOW_BEAM_POS);
+            break;
+
+        /* ---------- 远光灯 → Data[3] ---------- */
         case APP_VEHICLE_CMD_HIGH_BEAM_ON:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HIGH_BEAM_POS);
+            break;
         case APP_VEHICLE_CMD_HIGH_BEAM_OFF:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HIGH_BEAM_POS);
+            break;
+
+        /* ---------- 前雨刮 → Data[6] ---------- */
         case APP_VEHICLE_CMD_WIPER_OFF:
+            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_OFF, CAN_BCM_FRONT_WIPER_POS);
+            break;
         case APP_VEHICLE_CMD_WIPER_INTERVAL:
+            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_INTERVAL, CAN_BCM_FRONT_WIPER_POS);
+            break;
         case APP_VEHICLE_CMD_WIPER_ON:
+            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_LOW, CAN_BCM_FRONT_WIPER_POS);
+            break;
         case APP_VEHICLE_CMD_WIPER_HIGH:
+            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_HIGH, CAN_BCM_FRONT_WIPER_POS);
+            break;
+
+        /* ---------- 洗涤 → Data[2] ---------- */
         case APP_VEHICLE_CMD_WASHER_ON:
-            /*
-             * TODO: 替换为：安全判断 → CAN 发送 → 等反馈
-             */
-            vTaskDelay(pdMS_TO_TICKS(10U));
-            return APP_VEHICLE_RESULT_OK;
+            canData[2] |= CAN_SET_2BIT(CAN_BCM_WASHER_ON, CAN_BCM_WASHER_POS);
+            break;
 
         default:
             LOG_WARN("Unknown vehicle cmd: %d", cmd);
             return APP_VEHICLE_RESULT_FAIL;
     }
+
+    if (APP_CAN_SendIVI_BCM(canData) != 0)
+    {
+        LOG_ERR("CAN BCM send failed, cmd=%d", cmd);
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(10U));
+    return APP_VEHICLE_RESULT_OK;
 }
 
 /**
@@ -96,6 +147,9 @@ QueueHandle_t Vehicle_GetRxQueue(void)
 }
 
 /* ===== 统一控制入口 ===== */
+
+
+
 
 /**
  * @brief  统一控制请求入口（同步等待结果）。

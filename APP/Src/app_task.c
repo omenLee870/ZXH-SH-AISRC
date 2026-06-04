@@ -8,13 +8,16 @@
 #define APP_LED_TASK_STACK_WORDS        96U     /* LED 任务栈，单位 word，仅翻转 GPIO 和延时，保持较小即可。 */
 #define APP_VOICE_TASK_STACK_WORDS      256U    /* 语音任务栈。                 */
 #define APP_VEHICLE_TASK_STACK_WORDS    256U    /* 车辆控制栈。 */
+#define APP_CAN_MON_TASK_STACK_WORDS    192U    /* CAN 监控任务栈，用于周期读取状态并打印诊断日志。 */
 
 #define APP_START_TASK_PRIORITY         2U      /* 启动任务优先级，创建完业务任务后会删除自己。 */
 #define APP_LED_TASK_PRIORITY           1U      /* LED 心跳任务优先级，低于启动任务。 */
 #define APP_VOICE_TASK_PRIORITY         2U      /* 语音任务优先级。*/
 #define APP_VEHICLE_TASK_PRIORITY       3U      /* 车辆控制（最高）。← 新增    */
+#define APP_CAN_MON_TASK_PRIORITY       1U      /* CAN 监控任务优先级，仅输出调试信息，保持较低。 */
 
 #define APP_LED_PERIOD_MS               500U    /* PB0 心跳灯翻转周期，单位 ms。 */
+#define APP_CAN_MON_PERIOD_MS           500U    /* CAN 状态打印周期，单位 ms，用于观察接收错误计数变化。 */
 
 static TaskHandle_t s_appStartTaskHandle = NULL;    /* 启动任务句柄，当前仅用于创建阶段记录。 */
 
@@ -140,8 +143,6 @@ static void App_VoiceTask(void *pvParameters)
         /* 阻塞等待语音帧（ISR 通过队列扔进来的） */
         if (xQueueReceive(Voice_GetRxQueue(), &frame, portMAX_DELAY) == pdPASS)
         {
-            LOG_INFO("Voice cmd: 0x%02X", frame.cmd);
-
             /* 应答 */
             App_VoiceProcessFrame(&frame);
         }

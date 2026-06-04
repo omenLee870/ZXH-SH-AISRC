@@ -71,7 +71,6 @@ static uint8_t App_VoiceCmdMap(uint8_t voiceCmd, AppVehicleCommand_t *pOut)
 
     for (i = 0; i < VOICE_CMD_MAP_SIZE; i++)
     {
-        LOG_INFO("voiceTable[%d] table_voiceCmd: 0x%02X, table_voiceCmd: 0x%02X", i, s_voiceCmdMap[i].voiceCmd, voiceCmd);
         if (s_voiceCmdMap[i].voiceCmd == voiceCmd)
         {
             *pOut = s_voiceCmdMap[i].vehicleCmd;
