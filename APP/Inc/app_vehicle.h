@@ -31,6 +31,40 @@ typedef enum
     APP_VEHICLE_CMD_WIPER_INTERVAL,     /* 雨刮间歇。                 */
     APP_VEHICLE_CMD_WIPER_ON,           /* 打开雨刮。                 */
     APP_VEHICLE_CMD_WIPER_HIGH,         /* 雨刮高速。                 */
+    APP_VEHICLE_CMD_PARKING_LIGHT_ON,    /* 打开示廓灯。               */
+    APP_VEHICLE_CMD_PARKING_LIGHT_OFF,   /* 关闭示廓灯。               */
+    APP_VEHICLE_CMD_REAR_FOG_ON,         /* 打开后雾灯。               */
+    APP_VEHICLE_CMD_REAR_FOG_OFF,        /* 关闭后雾灯。               */
+    APP_VEHICLE_CMD_HAZARD_ON,           /* 打开双闪。                 */
+    APP_VEHICLE_CMD_HAZARD_OFF,          /* 关闭双闪。                 */
+    APP_VEHICLE_CMD_TRUNK_UNLOCK,        /* 打开后备箱。               */
+    APP_VEHICLE_CMD_MIRROR_UNFOLD,       /* 展开后视镜。               */
+    APP_VEHICLE_CMD_MIRROR_FOLD,         /* 折叠后视镜。               */
+    APP_VEHICLE_CMD_READING_LIGHT_ON,    /* 打开室内灯。               */
+    APP_VEHICLE_CMD_READING_LIGHT_OFF,   /* 关闭室内灯。               */
+    APP_VEHICLE_CMD_SUNROOF_FAN_ON,      /* 打开风扇。                 */
+    APP_VEHICLE_CMD_SUNROOF_FAN_OFF,     /* 关闭风扇。                 */
+    APP_VEHICLE_CMD_SUNROOF_FAN_L1,      /* 风扇一档。                 */
+    APP_VEHICLE_CMD_SUNROOF_FAN_L2,      /* 风扇二档。                 */
+    APP_VEHICLE_CMD_SUNROOF_FAN_L3,      /* 风扇三档。                 */
+    APP_VEHICLE_CMD_AC_HEAT_ON,          /* 空调制热。                 */
+    APP_VEHICLE_CMD_AC_COOL_ON,          /* 空调制冷。                 */
+    APP_VEHICLE_CMD_AC_OFF,              /* 关闭空调。                 */
+    APP_VEHICLE_CMD_AC_LEVEL1,           /* 空调一档。                 */
+    APP_VEHICLE_CMD_AC_LEVEL2,           /* 空调二档。                 */
+    APP_VEHICLE_CMD_AC_LEVEL3,           /* 空调三档。                 */
+
+    /* 以下不需 CAN 发送，直接返回 OK */
+    APP_VEHICLE_CMD_WEATHER_QUERY,       /* 查询天气。                 */
+    APP_VEHICLE_CMD_DATE_QUERY,          /* 查询日期。                 */
+    APP_VEHICLE_CMD_TIME_QUERY,          /* 查询时间。                 */
+    APP_VEHICLE_CMD_VOLUME_UP,           /* 增大音量。                 */
+    APP_VEHICLE_CMD_VOLUME_DOWN,         /* 减小音量。                 */
+    APP_VEHICLE_CMD_VOLUME_MAX,          /* 最大音量。                 */
+    APP_VEHICLE_CMD_VOLUME_MIN,          /* 最小音量。                 */
+    APP_VEHICLE_CMD_DATA_WAKEUP,         /* 数据唤醒。                 */
+    APP_VEHICLE_CMD_DATA_EXIT_WAKEUP,    /* 退出唤醒。                 */
+    APP_VEHICLE_CMD_15S_EXIT_WAKEUP,     /* 超时退出唤醒。             */
 
     APP_VEHICLE_CMD_WAKEUP = 0xF3U      /* 唤醒命令                   */
 } AppVehicleCommand_t;

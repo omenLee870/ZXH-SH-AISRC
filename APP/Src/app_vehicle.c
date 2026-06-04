@@ -121,6 +121,124 @@ uint8_t canData[8] = {0};           /**< 初始化为全 0x00（无请求） */
         case APP_VEHICLE_CMD_WASHER_ON:
             canData[2] |= CAN_SET_2BIT(CAN_BCM_WASHER_ON, CAN_BCM_WASHER_POS);
             break;
+        /* ---------- 示廓灯 (Data[3] bit0-1) ---------- */
+        case APP_VEHICLE_CMD_PARKING_LIGHT_ON:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_PARKING_LIGHT_POS);
+            break;
+        case APP_VEHICLE_CMD_PARKING_LIGHT_OFF:
+            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_PARKING_LIGHT_POS);
+            break;
+
+        /* ---------- 后雾灯 (Data[4] bit0-1) ---------- */
+        case APP_VEHICLE_CMD_REAR_FOG_ON:
+            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_REAR_FOG_POS);
+            break;
+        case APP_VEHICLE_CMD_REAR_FOG_OFF:
+            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_REAR_FOG_POS);
+            break;
+
+        /* ---------- 双闪 (Data[4] bit2-3) ---------- */
+        case APP_VEHICLE_CMD_HAZARD_ON:
+            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HAZARD_POS);
+            break;
+        case APP_VEHICLE_CMD_HAZARD_OFF:
+            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HAZARD_POS);
+            break;
+
+        /* ---------- 后备箱 (Data[4] bit4-5) ---------- */
+        case APP_VEHICLE_CMD_TRUNK_UNLOCK:
+            canData[4] |= CAN_SET_2BIT(CAN_BCM_TRUNK_UNLOCK, CAN_BCM_TRUNK_UNLOCK_POS);
+            break;
+
+        /* ---------- 后视镜 (Data[2] bit2-3) ---------- */
+        case APP_VEHICLE_CMD_MIRROR_UNFOLD:
+            canData[2] |= CAN_SET_2BIT(CAN_BCM_MIRROR_UNFOLD, CAN_BCM_MIRROR_FOLD_POS);
+            break;
+        case APP_VEHICLE_CMD_MIRROR_FOLD:
+            canData[2] |= CAN_SET_2BIT(CAN_BCM_MIRROR_FOLD, CAN_BCM_MIRROR_FOLD_POS);
+            break;
+
+        /* ---------- 阅读灯 (Data[6] bit0-1) ---------- */
+        case APP_VEHICLE_CMD_READING_LIGHT_ON:
+            canData[6] |= CAN_SET_2BIT(CAN_BCM_READING_LIGHT_ON, CAN_BCM_READING_LIGHT_POS);
+            break;
+        case APP_VEHICLE_CMD_READING_LIGHT_OFF:
+            canData[6] |= CAN_SET_2BIT(CAN_BCM_READING_LIGHT_OFF, CAN_BCM_READING_LIGHT_POS);
+            break;
+
+        /* ---------- 天窗风扇 (Data[5] bit0-2, 3bit) ---------- */
+        case APP_VEHICLE_CMD_SUNROOF_FAN_ON:
+            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS);
+            break;
+        case APP_VEHICLE_CMD_SUNROOF_FAN_OFF:
+            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_OFF, CAN_BCM_SUNROOF_FAN_POS);
+            break;
+        case APP_VEHICLE_CMD_SUNROOF_FAN_L1:
+            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS);
+            break;
+        case APP_VEHICLE_CMD_SUNROOF_FAN_L2:
+            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS);
+            break;
+        case APP_VEHICLE_CMD_SUNROOF_FAN_L3:
+            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL3, CAN_BCM_SUNROOF_FAN_POS);
+            break;
+
+        /* ---------- 空调 → 走 IVI_ACU（新 CAN ID），不走 IVI_BCM ---------- */
+        case APP_VEHICLE_CMD_AC_HEAT_ON:
+        case APP_VEHICLE_CMD_AC_COOL_ON:
+        case APP_VEHICLE_CMD_AC_OFF:
+        case APP_VEHICLE_CMD_AC_LEVEL1:
+        case APP_VEHICLE_CMD_AC_LEVEL2:
+        case APP_VEHICLE_CMD_AC_LEVEL3:
+        {
+            uint8_t acuData[8] = {0};
+            switch (cmd)
+            {
+                case APP_VEHICLE_CMD_AC_HEAT_ON:
+                    acuData[0] = CAN_ACU_FAN_LEVEL1;
+                    acuData[1] = CAN_ACU_MODE_HEAT;
+                    break;
+                case APP_VEHICLE_CMD_AC_COOL_ON:
+                    acuData[0] = CAN_ACU_FAN_LEVEL1;
+                    acuData[1] = CAN_ACU_MODE_COOL;
+                    break;
+                case APP_VEHICLE_CMD_AC_OFF:
+                    acuData[0] = CAN_ACU_FAN_OFF;
+                    acuData[1] = CAN_ACU_MODE_OFF;
+                    break;
+                case APP_VEHICLE_CMD_AC_LEVEL1:
+                    acuData[0] = CAN_ACU_FAN_LEVEL1;
+                    break;
+                case APP_VEHICLE_CMD_AC_LEVEL2:
+                    acuData[0] = CAN_ACU_FAN_LEVEL2;
+                    break;
+                case APP_VEHICLE_CMD_AC_LEVEL3:
+                    acuData[0] = CAN_ACU_FAN_LEVEL3;
+                    break;
+                default:
+                    break;
+            }
+            if (APP_CAN_SendIVI_ACU(acuData) != 0)
+            {
+                LOG_ERR("CAN ACU send failed, cmd=%d", cmd);
+                return APP_VEHICLE_RESULT_FAIL;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10U));
+            return APP_VEHICLE_RESULT_OK;
+        }
+
+        /* ---------- 不需 CAN 发送的命令：直接返回 OK ---------- */
+        case APP_VEHICLE_CMD_WEATHER_QUERY:
+        case APP_VEHICLE_CMD_DATE_QUERY:
+        case APP_VEHICLE_CMD_TIME_QUERY:
+        case APP_VEHICLE_CMD_VOLUME_UP:
+        case APP_VEHICLE_CMD_VOLUME_DOWN:
+        case APP_VEHICLE_CMD_VOLUME_MAX:
+        case APP_VEHICLE_CMD_VOLUME_MIN:
+        case APP_VEHICLE_CMD_DATA_WAKEUP:
+        case APP_VEHICLE_CMD_DATA_EXIT_WAKEUP:
+        case APP_VEHICLE_CMD_15S_EXIT_WAKEUP:
+            return APP_VEHICLE_RESULT_OK;
 
         default:
             LOG_WARN("Unknown vehicle cmd: %d", cmd);

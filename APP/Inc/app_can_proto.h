@@ -35,6 +35,7 @@
 /* ---------- IVI 发送 (TX) ---------- */
 #define CAN_ID_IVI_BCM              0x18FF1D18U     /**< IVI → BCM: 车身控制命令。 */
 #define CAN_ID_IVI_MCU              0x18FFEF18U     /**< IVI → MCU: 驾驶模式控制。 */
+#define CAN_ID_IVI_ACU              0x18FF1C18U     /**< IVI → ACU: 空调控制   */
 
 /* ---------- IVI 接收 (RX) ---------- */
 #define CAN_ID_MCU_DPLY1            0x18FF17EFU     /**< MCU → 仪表: 档位/车速/SOC   */
@@ -140,6 +141,23 @@
 #define CAN_MCU_FWD_REV_POS             24      /**< Data[3] bit0-1, 前进/后退     */
 
 /* ================================================================== */
+/* 雷迈协议 — IVI_ACU 信号定义 (ID=0x18FF1C18, DLC=8, 100ms 周期)     */
+/*                                                                     */
+/* Data[0]: 风扇速度请求 (0x0=无请求, 0x1=OFF, 0x2=1档, 0x3=2档,     */
+/*                       0x4=3档)                                      */
+/* Data[1]: 空调模式请求 (0x0=无请求, 0x1=OFF, 0x2=制热, 0x3=制冷)    */
+/* Data[2~7]: 保留                                                    */
+/* ================================================================== */
+#define CAN_ACU_FAN_OFF             0x01U
+#define CAN_ACU_FAN_LEVEL1          0x02U
+#define CAN_ACU_FAN_LEVEL2          0x03U
+#define CAN_ACU_FAN_LEVEL3          0x04U
+
+#define CAN_ACU_MODE_OFF            0x01U
+#define CAN_ACU_MODE_HEAT           0x02U
+#define CAN_ACU_MODE_COOL           0x03U
+
+/* ================================================================== */
 /* 辅助宏: 写 2-bit / 3-bit 信号到目标字节                              */
 /* ================================================================== */
 
@@ -179,5 +197,12 @@ int APP_CAN_SendIVI_BCM(uint8_t *data);
  * @return 0 = 成功, -1 = 发送失败
  */
 int APP_CAN_SendIVI_MCU(uint8_t *data);
+
+/**
+ * @brief  构建并发送 IVI_ACU 报文（空调控制）
+ * @param  data 8 字节帧数据
+ * @return 0 = 成功, -1 = 发送失败
+ */
+int APP_CAN_SendIVI_ACU(uint8_t *data);
 
 #endif /* __APP_CAN_PROTO_H__ */

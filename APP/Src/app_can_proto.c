@@ -41,3 +41,15 @@ int APP_CAN_SendIVI_MCU(uint8_t *data)
 
     return APP_CAN_Send(CAN_ID_IVI_MCU, data, 8);
 }
+
+/**
+ * @brief  构建并发送 IVI_ACU 报文
+ */
+int APP_CAN_SendIVI_ACU(uint8_t *data)
+{
+    LOG_DBG("ACU TX: %02X %02X %02X %02X %02X %02X %02X %02X",
+            data[0], data[1], data[2], data[3],
+            data[4], data[5], data[6], data[7]);
+
+    return APP_CAN_Send(CAN_ID_IVI_ACU, data, 8);
+}
