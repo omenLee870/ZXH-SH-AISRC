@@ -19,6 +19,8 @@
 
 #include "py32f0xx_hal.h"
 #include <stdint.h>
+#include <FreeRTOS.h>
+#include <queue.h>
 
 /* ================================================================== */
 /* CAN 总线硬件参数                                                     */
@@ -35,6 +37,22 @@
 #define CAN_SJW        4U
 #define CAN_SEG1       17U
 #define CAN_SEG2       6U
+
+/* ================================================================== */
+/* CAN 接收帧结构体                                                     */
+/* ================================================================== */
+typedef struct
+{
+    uint32_t id;            /**< 29-bit 扩展帧 ID                       */
+    uint8_t  dlc;           /**< 数据长度 (0~8)                        */
+    uint8_t  data[8];       /**< 数据域                                */
+} CAN_RxFrame_t;
+
+/**
+ * @brief  获取 CAN 接收队列句柄
+ * @return FreeRTOS 队列句柄，供 CAN_RxTask 阻塞等待
+ */
+QueueHandle_t CAN_GetRxQueue(void);
 
 /* ================================================================== */
 /* API 声明                                                            */
@@ -70,5 +88,11 @@ int APP_CAN_Send(uint32_t id, uint8_t *data, uint8_t len);
  * @note   供 CAN_IRQHandler() 使用（app_can.c 内部自用，外部不需要调）
  */
 CAN_HandleTypeDef *APP_CAN_GetHandle(void);
+
+/**
+ * @brief  CAN 接收帧处理，由 CAN_RxTask 调用
+ * @note   根据帧 ID 分发到不同处理逻辑（车速/灯光/故障等）
+ */
+void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame);
 
 #endif /* __APP_CAN_H__ */

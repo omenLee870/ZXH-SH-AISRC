@@ -25,6 +25,7 @@ static void App_StartTask(void *pvParameters);
 static void App_LedTask(void *pvParameters);
 static void App_VoiceTask(void *pvParameters);
 static void App_VehicleTask(void *pvParameters);
+static void CAN_RxTask(void *pvParameters);
 
 /**                                                                                                                                         
  * @brief  创建应用启动任务。
@@ -99,6 +100,19 @@ static void App_StartTask(void *pvParameters)
     if (ret != pdPASS)
     {
         LOG_ERR("Failed to create Vehicle task!");
+        APP_ErrorHandler();
+    }
+
+    /******************** 创建 CAN 接收任务 ********************/
+    ret = xTaskCreate(CAN_RxTask,
+                      "CAN_Rx",
+                      APP_CAN_MON_TASK_STACK_WORDS,
+                      NULL,
+                      APP_CAN_MON_TASK_PRIORITY,
+                      NULL);
+    if (ret != pdPASS)
+    {
+        LOG_ERR("Failed to create CAN_Rx task!");
         APP_ErrorHandler();
     }
 
@@ -179,6 +193,28 @@ void App_VehicleTask(void *pvParameters)
                             (uint32_t)result,
                             eSetValueWithOverwrite);
             }
+        }
+    }
+}
+
+/**
+ * @brief  CAN 接收任务。
+ * @param  pvParameters FreeRTOS 任务参数，当前未使用。
+ * @note
+ */
+static void CAN_RxTask(void *pvParameters)
+{
+    CAN_RxFrame_t frame;
+
+    (void)pvParameters;
+
+    LOG_INFO("CAN Rx task started");
+
+    while (1)
+    {
+        if (xQueueReceive(CAN_GetRxQueue(), &frame, portMAX_DELAY) == pdPASS)
+        {
+            CAN_ProcessRxFrame(&frame);
         }
     }
 }

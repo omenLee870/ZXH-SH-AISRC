@@ -26,11 +26,17 @@
 
 #include "app_can.h"
 #include "app_debug.h"
+#include "FreeRTOS.h"
+#include "queue.h"
+#include "task.h"
 
 /* ================================================================== */
 /* 全局 CAN 句柄                                                       */
 /* ================================================================== */
 CAN_HandleTypeDef CanHandle;
+
+#define CAN_RX_QUEUE_LENGTH     16          /**< 接收队列容量（帧数）     */
+static QueueHandle_t s_canRxQueue = NULL;   /**< CAN 接收队列句柄         */
 
 /* ================================================================== */
 /* HAL_CAN_MspInit() — 硬件资源初始化                                   */
@@ -92,6 +98,15 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef *hcan)
      */
     HAL_NVIC_SetPriority(CAN_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(CAN_IRQn);
+
+    /* 创建 CAN 接收队列 */
+    s_canRxQueue = xQueueCreate(CAN_RX_QUEUE_LENGTH, sizeof(CAN_RxFrame_t));
+    if (s_canRxQueue == NULL)
+    {
+        LOG_ERR("CAN RX queue create failed");
+        return;
+    }
+    LOG_DBG("CAN RX queue created, capacity=%d", CAN_RX_QUEUE_LENGTH);
 }
 
 /* ================================================================== */
@@ -252,21 +267,20 @@ CAN_HandleTypeDef *APP_CAN_GetHandle(void)
 void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef *hcan)
 {
     CAN_RxHeaderTypeDef CanRxHeader = {0};
-    uint8_t RxData[8] = {0};
-    HAL_StatusTypeDef ret;
+    CAN_RxFrame_t frame = {0};
+    BaseType_t pxHigherPriorityTaskWoken = pdFALSE;
 
-    ret = HAL_CAN_GetRxMessage(hcan, &CanRxHeader, RxData);
-    if (ret != HAL_OK)
-    {
-        return;
-    }
+    HAL_CAN_GetRxMessage(hcan, &CanRxHeader, frame.data);
+    
+    frame.id  = CanRxHeader.Identifier;
+    frame.dlc = CanRxHeader.DataLength;
 
-    LOG_DBG("CAN RX id=0x%08lX idType=%lu dlc=%lu data=%02X %02X %02X %02X %02X %02X %02X %02X",
-             (unsigned long)CanRxHeader.Identifier,
-             (unsigned long)CanRxHeader.IdType,
-             (unsigned long)CanRxHeader.DataLength,
-             RxData[0], RxData[1], RxData[2], RxData[3],
-             RxData[4], RxData[5], RxData[6], RxData[7]);
+    /**
+     * 从 ISR 投递到 FreeRTOS 队列，不在中断里处理业务逻辑。
+     * 如果队列满则丢弃（CAN_RX_QUEUE_OVERFLOW 事件）。
+     */
+    xQueueSendFromISR(s_canRxQueue, &frame, &pxHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
 }
 
 /* ================================================================== */
@@ -287,4 +301,25 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef *hcan)
 void CAN_IRQHandler(void)
 {
     HAL_CAN_IRQHandler(&CanHandle);
+}
+
+/**
+ * @brief  获取 CAN 接收队列句柄
+ */
+QueueHandle_t CAN_GetRxQueue(void)
+{
+    return s_canRxQueue;
+}
+
+/**
+ * @brief  CAN 接收帧处理（从 CAN_RxTask 调用）
+ * @param  frame 指向 CAN 接收帧的指针
+ * @note
+ */
+void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame)
+{
+    LOG_DBG("CAN RX id=0x%08lX len=%d %02X %02X %02X %02X %02X %02X %02X %02X",
+            frame->id, frame->dlc,
+            frame->data[0], frame->data[1], frame->data[2], frame->data[3],
+            frame->data[4], frame->data[5], frame->data[6], frame->data[7]);
 }
