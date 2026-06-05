@@ -89,10 +89,6 @@ int APP_CAN_Send(uint32_t id, uint8_t *data, uint8_t len);
  */
 CAN_HandleTypeDef *APP_CAN_GetHandle(void);
 
-/**
- * @brief  CAN 接收帧处理，由 CAN_RxTask 调用
- * @note   根据帧 ID 分发到不同处理逻辑（车速/灯光/故障等）
- */
 void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame);
 
 #endif /* __APP_CAN_H__ */

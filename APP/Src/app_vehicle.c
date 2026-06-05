@@ -12,13 +12,204 @@
 #include "app_debug.h"
 #include "queue.h"
 #include "app_can_proto.h"
+#include <stddef.h>
 
 #define LOG_TAG "vehicle"
+
+/**
+ * @brief  CAN 控制目标类型。
+ */
+typedef enum
+{
+    APP_VEHICLE_CAN_TARGET_BCM = 0,      /* 发 IVI_BCM，等待 BCM_TBOX1 反馈。 */
+    APP_VEHICLE_CAN_TARGET_ACU,          /* 发 IVI_ACU，等待 ACU_IVI 反馈。   */
+    APP_VEHICLE_CAN_TARGET_SRCM          /* 发 IVI_BCM，等待 SRCM 反馈。      */
+} AppVehicleCanTarget_t;
+
+/**
+ * @brief  单条车辆控制命令的表驱动配置。
+ */
+typedef struct
+{
+    AppVehicleCommand_t   cmd;           /* 内部车辆控制命令。 */
+    AppVehicleCanTarget_t target;        /* 发送目标和反馈来源。 */
+
+    uint8_t txByte;                      /* 要写入的 CAN 数据字节下标。 */
+    uint8_t txValue;                     /* 已经左移到目标 bit 位置后的值。 */
+
+    uint16_t statusOffset;               /* VehicleStatus_t 中反馈字段的偏移。 */
+    uint8_t expected;                    /* 期望反馈值。 */
+} AppVehicleCmdMap_t;
 
 #define APP_VEHICLE_REQ_QUEUE_LENGTH        4U
 #define APP_VEHICLE_REQ_SEND_TIMEOUT_MS     20U
 
+/** RX 反馈等待时间（ms），给 BCM/ACU/SRCM 至少一个周期的反应时间 */
+#define APP_VEHICLE_RX_WAIT_MS              150U
+
 static QueueHandle_t s_vehicleReqQueue = NULL;
+
+static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
+{
+    { APP_VEHICLE_CMD_LEFT_TURN_ON,      APP_VEHICLE_CAN_TARGET_BCM,  5U, CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_LH_TURN_POS),              offsetof(VehicleStatus_t, lh_turn_light_out),        1U },
+    { APP_VEHICLE_CMD_LEFT_TURN_OFF,     APP_VEHICLE_CAN_TARGET_BCM,  5U, CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_LH_TURN_POS),             offsetof(VehicleStatus_t, lh_turn_light_out),        0U },
+    { APP_VEHICLE_CMD_RIGHT_TURN_ON,     APP_VEHICLE_CAN_TARGET_BCM,  5U, CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_RH_TURN_POS),              offsetof(VehicleStatus_t, rh_turn_light_out),        1U },
+    { APP_VEHICLE_CMD_RIGHT_TURN_OFF,    APP_VEHICLE_CAN_TARGET_BCM,  5U, CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_RH_TURN_POS),             offsetof(VehicleStatus_t, rh_turn_light_out),        0U },
+
+    { APP_VEHICLE_CMD_LOW_BEAM_ON,       APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_LOW_BEAM_POS),            offsetof(VehicleStatus_t, low_beam_light_out),       1U },
+    { APP_VEHICLE_CMD_LOW_BEAM_OFF,      APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_LOW_BEAM_POS),           offsetof(VehicleStatus_t, low_beam_light_out),       0U },
+    { APP_VEHICLE_CMD_HIGH_BEAM_ON,      APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HIGH_BEAM_POS),           offsetof(VehicleStatus_t, high_beam_light_status),   1U },
+    { APP_VEHICLE_CMD_HIGH_BEAM_OFF,     APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HIGH_BEAM_POS),          offsetof(VehicleStatus_t, high_beam_light_status),   0U },
+
+    { APP_VEHICLE_CMD_WIPER_OFF,         APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_3BIT(CAN_BCM_WIPER_OFF, CAN_BCM_FRONT_WIPER_POS),        offsetof(VehicleStatus_t, front_wiper_status),       0U },
+    { APP_VEHICLE_CMD_WIPER_INTERVAL,    APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_3BIT(CAN_BCM_WIPER_INTERVAL, CAN_BCM_FRONT_WIPER_POS),   offsetof(VehicleStatus_t, front_wiper_status),       1U },
+    { APP_VEHICLE_CMD_WIPER_ON,          APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_3BIT(CAN_BCM_WIPER_LOW, CAN_BCM_FRONT_WIPER_POS),        offsetof(VehicleStatus_t, front_wiper_status),       2U },
+    { APP_VEHICLE_CMD_WIPER_HIGH,        APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_3BIT(CAN_BCM_WIPER_HIGH, CAN_BCM_FRONT_WIPER_POS),       offsetof(VehicleStatus_t, front_wiper_status),       3U },
+    { APP_VEHICLE_CMD_WASHER_ON,         APP_VEHICLE_CAN_TARGET_BCM,  2U, CAN_SET_2BIT(CAN_BCM_WASHER_ON, CAN_BCM_WASHER_POS),             offsetof(VehicleStatus_t, wiper_wash_out),           1U },
+
+    { APP_VEHICLE_CMD_PARKING_LIGHT_ON,  APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_PARKING_LIGHT_POS),       offsetof(VehicleStatus_t, parking_light_out),        1U },
+    { APP_VEHICLE_CMD_PARKING_LIGHT_OFF, APP_VEHICLE_CAN_TARGET_BCM,  3U, CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_PARKING_LIGHT_POS),      offsetof(VehicleStatus_t, parking_light_out),        0U },
+    { APP_VEHICLE_CMD_REAR_FOG_ON,       APP_VEHICLE_CAN_TARGET_BCM,  4U, CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_REAR_FOG_POS),            offsetof(VehicleStatus_t, rear_fog_light_status),    1U },
+    { APP_VEHICLE_CMD_REAR_FOG_OFF,      APP_VEHICLE_CAN_TARGET_BCM,  4U, CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_REAR_FOG_POS),           offsetof(VehicleStatus_t, rear_fog_light_status),    0U },
+    { APP_VEHICLE_CMD_HAZARD_ON,         APP_VEHICLE_CAN_TARGET_BCM,  4U, CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HAZARD_POS),              offsetof(VehicleStatus_t, hazard_light_switch),      1U },
+    { APP_VEHICLE_CMD_HAZARD_OFF,        APP_VEHICLE_CAN_TARGET_BCM,  4U, CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HAZARD_POS),             offsetof(VehicleStatus_t, hazard_light_switch),      0U },
+
+    { APP_VEHICLE_CMD_TRUNK_UNLOCK,      APP_VEHICLE_CAN_TARGET_BCM,  4U, CAN_SET_2BIT(CAN_BCM_TRUNK_UNLOCK, CAN_BCM_TRUNK_UNLOCK_POS),    offsetof(VehicleStatus_t, trunk_unlock_out),         1U },
+    { APP_VEHICLE_CMD_MIRROR_UNFOLD,     APP_VEHICLE_CAN_TARGET_BCM,  2U, CAN_SET_2BIT(CAN_BCM_MIRROR_UNFOLD, CAN_BCM_MIRROR_FOLD_POS),    offsetof(VehicleStatus_t, outer_mirror_fold),        1U },
+    { APP_VEHICLE_CMD_MIRROR_FOLD,       APP_VEHICLE_CAN_TARGET_BCM,  2U, CAN_SET_2BIT(CAN_BCM_MIRROR_FOLD, CAN_BCM_MIRROR_FOLD_POS),      offsetof(VehicleStatus_t, outer_mirror_fold),        2U },
+    { APP_VEHICLE_CMD_READING_LIGHT_ON,  APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_ON, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),        1U },
+    { APP_VEHICLE_CMD_READING_LIGHT_OFF, APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_OFF, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),       0U },
+
+    { APP_VEHICLE_CMD_SUNROOF_FAN_ON,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_OFF,   APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_OFF, CAN_BCM_SUNROOF_FAN_POS),    offsetof(VehicleStatus_t, sr_fan_level),             0U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_L1,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_L2,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_L3,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL3, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             3U },
+
+    { APP_VEHICLE_CMD_AC_LEVEL1,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL1,                                             offsetof(VehicleStatus_t, ac_fan_gear),              1U },
+    { APP_VEHICLE_CMD_AC_LEVEL2,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL2,                                             offsetof(VehicleStatus_t, ac_fan_gear),              2U },
+    { APP_VEHICLE_CMD_AC_LEVEL3,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL3,                                             offsetof(VehicleStatus_t, ac_fan_gear),              3U }
+};
+
+#define APP_VEHICLE_CMD_MAP_SIZE \
+    (sizeof(s_vehicleCmdMap) / sizeof(s_vehicleCmdMap[0]))
+
+/**
+ * @brief  根据车辆命令查找表驱动配置。
+ */
+static const AppVehicleCmdMap_t *App_VehicleFindCmdMap(AppVehicleCommand_t cmd)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_VEHICLE_CMD_MAP_SIZE; i++)
+    {
+        if (s_vehicleCmdMap[i].cmd == cmd)
+        {
+            return &s_vehicleCmdMap[i];
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * @brief  从车辆状态结构体中读取一个 uint8_t 状态字段。
+ */
+static uint8_t App_VehicleReadStatusU8(uint16_t offset)
+{
+    const uint8_t *pBase = (const uint8_t *)&g_vehicleStatus;
+
+    return *(const uint8_t *)(pBase + offset);
+}
+
+/**
+ * @brief  等待指定类型的 CAN 反馈报文刷新。
+ * @param  pRxTick   指向对应反馈报文更新时间戳，例如 bcm_tbox1_tick / acu_ivi_tick / srcm_tick。
+ * @param  oldTick   发送控制命令前记录的旧时间戳。
+ * @param  timeoutMs 最长等待时间，单位 ms。
+ * @return pdTRUE = 等到新的反馈报文, pdFALSE = 超时未等到。
+ * @note   该函数用于避免读取旧反馈状态：
+ *         发送命令前先保存 oldTick，发送后等待 CAN_RxTask 解析新反馈帧并更新 tick。
+ */
+static BaseType_t App_VehicleWaitRxUpdate(const uint32_t *pRxTick,
+                                          uint32_t oldTick,
+                                          uint32_t timeoutMs)
+{
+    TickType_t startTick;     /* 进入等待时的系统 tick，用于计算超时。 */
+
+    if (pRxTick == NULL)
+    {
+        return pdFALSE;
+    }
+
+    startTick = xTaskGetTickCount();
+
+    while ((xTaskGetTickCount() - startTick) < pdMS_TO_TICKS(timeoutMs))
+    {
+        if (*pRxTick != oldTick)
+        {
+            return pdTRUE;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10U));
+    }
+
+    return pdFALSE;
+}
+
+/**
+ * @brief  按表项发送 CAN 命令，并等待对应反馈确认。
+ */
+static AppVehicleResult_t App_VehicleExecuteByMap(const AppVehicleCmdMap_t *pMap)
+{
+    uint8_t data[8] = {0};
+    uint32_t oldTick;
+    const uint32_t *pRxTick;
+    int sendRet;
+
+    if (pMap == NULL)
+    {
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    data[pMap->txByte] = pMap->txValue;
+
+    if (pMap->target == APP_VEHICLE_CAN_TARGET_BCM)
+    {
+        pRxTick = &g_vehicleStatus.bcm_tbox1_tick;
+        oldTick = g_vehicleStatus.bcm_tbox1_tick;
+        sendRet = APP_CAN_SendIVI_BCM(data);
+    }
+    else if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        pRxTick = &g_vehicleStatus.acu_ivi_tick;
+        oldTick = g_vehicleStatus.acu_ivi_tick;
+        sendRet = APP_CAN_SendIVI_ACU(data);
+    }
+    else
+    {
+        pRxTick = &g_vehicleStatus.srcm_tick;
+        oldTick = g_vehicleStatus.srcm_tick;
+        sendRet = APP_CAN_SendIVI_BCM(data);
+    }
+
+    if (sendRet != 0)
+    {
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    if (App_VehicleWaitRxUpdate(pRxTick, oldTick, APP_VEHICLE_RX_WAIT_MS) != pdTRUE)
+    {
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    if (App_VehicleReadStatusU8(pMap->statusOffset) == pMap->expected)
+    {
+        return APP_VEHICLE_RESULT_OK;
+    }
+
+    return APP_VEHICLE_RESULT_FAIL;
+}
 
 /* ===== 初始化 ===== */
 
@@ -44,190 +235,23 @@ BaseType_t App_VehicleInit(void)
 /* ===== 执行命令 ===== */
 
 /**
- * @brief  执行车辆控制命令
- * @param  cmd 内部统一命令编号
- * @return 执行结果
- * @note   根据命令类型，组装雷迈协议 IVI_BCM 帧并通过 CAN 总线发出。
- *
- *         映射关系（内部命令 → CAN 信号）：
- *         - 转向灯 → IVI_BCM Data[5] : LH_Turn/RH_Turn (2bit)
- *         - 近光灯 → IVI_BCM Data[3] : Low_Beam (2bit)
- *         - 远光灯 → IVI_BCM Data[3] : High_Beam (2bit)
- *         - 雨刮   → IVI_BCM Data[6] : Front_Wiper (3bit)
- *         - 洗涤   → IVI_BCM Data[2] : Wiper_Wash (2bit)
- *
- *         信号值约定（雷迈协议）：
- *         0x0 = 无请求（默认）, 0x1 = ON/开启, 0x2 = OFF/关闭
- *         雨刮多级: 0x1=关, 0x2=间歇, 0x3=低速, 0x4=高速
- *
- *         TODO: 后续增加安全条件判断（车速 > 0 时禁止某些操作）
- *         TODO: 当前是事件驱动（每次操作发一帧），非 100ms 周期模式
+ * @brief  执行车辆控制命令。
+ * @param  cmd 内部统一命令编号。
+ * @return 执行结果。
+ * @note
  */
 AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 {
-uint8_t canData[8] = {0};           /**< 初始化为全 0x00（无请求） */
+    const AppVehicleCmdMap_t *pMap;      /* 命令映射表项。 */
+    uint8_t acuData[8] = {0};            /* IVI_ACU 控制帧数据。 */
+    uint32_t oldTick;                    /* 发送命令前 ACU_IVI 反馈更新时间。 */
+    uint8_t expectedFan;                 /* 期望风机反馈值。 */
+    uint8_t expectedMode;                /* 期望模式反馈值。 */
 
     switch (cmd)
     {
         case APP_VEHICLE_CMD_WAKEUP:
         case APP_VEHICLE_CMD_WAKE_WORD:
-            return APP_VEHICLE_RESULT_OK;
-
-        /* ---------- 转向灯 → Data[5] ---------- */
-        case APP_VEHICLE_CMD_LEFT_TURN_ON:
-            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_LH_TURN_POS);
-            break;
-        case APP_VEHICLE_CMD_LEFT_TURN_OFF:
-            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_LH_TURN_POS);
-            break;
-        case APP_VEHICLE_CMD_RIGHT_TURN_ON:
-            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_ON, CAN_BCM_RH_TURN_POS);
-            break;
-        case APP_VEHICLE_CMD_RIGHT_TURN_OFF:
-            canData[5] |= CAN_SET_2BIT(CAN_BCM_TURN_OFF, CAN_BCM_RH_TURN_POS);
-            break;
-
-        /* ---------- 近光灯 → Data[3] ---------- */
-        case APP_VEHICLE_CMD_LOW_BEAM_ON:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_LOW_BEAM_POS);
-            break;
-        case APP_VEHICLE_CMD_LOW_BEAM_OFF:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_LOW_BEAM_POS);
-            break;
-
-        /* ---------- 远光灯 → Data[3] ---------- */
-        case APP_VEHICLE_CMD_HIGH_BEAM_ON:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HIGH_BEAM_POS);
-            break;
-        case APP_VEHICLE_CMD_HIGH_BEAM_OFF:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HIGH_BEAM_POS);
-            break;
-
-        /* ---------- 前雨刮 → Data[6] ---------- */
-        case APP_VEHICLE_CMD_WIPER_OFF:
-            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_OFF, CAN_BCM_FRONT_WIPER_POS);
-            break;
-        case APP_VEHICLE_CMD_WIPER_INTERVAL:
-            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_INTERVAL, CAN_BCM_FRONT_WIPER_POS);
-            break;
-        case APP_VEHICLE_CMD_WIPER_ON:
-            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_LOW, CAN_BCM_FRONT_WIPER_POS);
-            break;
-        case APP_VEHICLE_CMD_WIPER_HIGH:
-            canData[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_HIGH, CAN_BCM_FRONT_WIPER_POS);
-            break;
-
-        /* ---------- 洗涤 → Data[2] ---------- */
-        case APP_VEHICLE_CMD_WASHER_ON:
-            canData[2] |= CAN_SET_2BIT(CAN_BCM_WASHER_ON, CAN_BCM_WASHER_POS);
-            break;
-        /* ---------- 示廓灯 (Data[3] bit0-1) ---------- */
-        case APP_VEHICLE_CMD_PARKING_LIGHT_ON:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_PARKING_LIGHT_POS);
-            break;
-        case APP_VEHICLE_CMD_PARKING_LIGHT_OFF:
-            canData[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_PARKING_LIGHT_POS);
-            break;
-
-        /* ---------- 后雾灯 (Data[4] bit0-1) ---------- */
-        case APP_VEHICLE_CMD_REAR_FOG_ON:
-            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_REAR_FOG_POS);
-            break;
-        case APP_VEHICLE_CMD_REAR_FOG_OFF:
-            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_REAR_FOG_POS);
-            break;
-
-        /* ---------- 双闪 (Data[4] bit2-3) ---------- */
-        case APP_VEHICLE_CMD_HAZARD_ON:
-            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_ON, CAN_BCM_HAZARD_POS);
-            break;
-        case APP_VEHICLE_CMD_HAZARD_OFF:
-            canData[4] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HAZARD_POS);
-            break;
-
-        /* ---------- 后备箱 (Data[4] bit4-5) ---------- */
-        case APP_VEHICLE_CMD_TRUNK_UNLOCK:
-            canData[4] |= CAN_SET_2BIT(CAN_BCM_TRUNK_UNLOCK, CAN_BCM_TRUNK_UNLOCK_POS);
-            break;
-
-        /* ---------- 后视镜 (Data[2] bit2-3) ---------- */
-        case APP_VEHICLE_CMD_MIRROR_UNFOLD:
-            canData[2] |= CAN_SET_2BIT(CAN_BCM_MIRROR_UNFOLD, CAN_BCM_MIRROR_FOLD_POS);
-            break;
-        case APP_VEHICLE_CMD_MIRROR_FOLD:
-            canData[2] |= CAN_SET_2BIT(CAN_BCM_MIRROR_FOLD, CAN_BCM_MIRROR_FOLD_POS);
-            break;
-
-        /* ---------- 阅读灯 (Data[6] bit0-1) ---------- */
-        case APP_VEHICLE_CMD_READING_LIGHT_ON:
-            canData[6] |= CAN_SET_2BIT(CAN_BCM_READING_LIGHT_ON, CAN_BCM_READING_LIGHT_POS);
-            break;
-        case APP_VEHICLE_CMD_READING_LIGHT_OFF:
-            canData[6] |= CAN_SET_2BIT(CAN_BCM_READING_LIGHT_OFF, CAN_BCM_READING_LIGHT_POS);
-            break;
-
-        /* ---------- 天窗风扇 (Data[5] bit0-2, 3bit) ---------- */
-        case APP_VEHICLE_CMD_SUNROOF_FAN_ON:
-            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS);
-            break;
-        case APP_VEHICLE_CMD_SUNROOF_FAN_OFF:
-            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_OFF, CAN_BCM_SUNROOF_FAN_POS);
-            break;
-        case APP_VEHICLE_CMD_SUNROOF_FAN_L1:
-            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS);
-            break;
-        case APP_VEHICLE_CMD_SUNROOF_FAN_L2:
-            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS);
-            break;
-        case APP_VEHICLE_CMD_SUNROOF_FAN_L3:
-            canData[5] |= CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL3, CAN_BCM_SUNROOF_FAN_POS);
-            break;
-
-        /* ---------- 空调 → 走 IVI_ACU（新 CAN ID），不走 IVI_BCM ---------- */
-        case APP_VEHICLE_CMD_AC_HEAT_ON:
-        case APP_VEHICLE_CMD_AC_COOL_ON:
-        case APP_VEHICLE_CMD_AC_OFF:
-        case APP_VEHICLE_CMD_AC_LEVEL1:
-        case APP_VEHICLE_CMD_AC_LEVEL2:
-        case APP_VEHICLE_CMD_AC_LEVEL3:
-        {
-            uint8_t acuData[8] = {0};
-            switch (cmd)
-            {
-                case APP_VEHICLE_CMD_AC_HEAT_ON:
-                    acuData[0] = CAN_ACU_FAN_LEVEL1;
-                    acuData[1] = CAN_ACU_MODE_HEAT;
-                    break;
-                case APP_VEHICLE_CMD_AC_COOL_ON:
-                    acuData[0] = CAN_ACU_FAN_LEVEL1;
-                    acuData[1] = CAN_ACU_MODE_COOL;
-                    break;
-                case APP_VEHICLE_CMD_AC_OFF:
-                    acuData[0] = CAN_ACU_FAN_OFF;
-                    acuData[1] = CAN_ACU_MODE_OFF;
-                    break;
-                case APP_VEHICLE_CMD_AC_LEVEL1:
-                    acuData[0] = CAN_ACU_FAN_LEVEL1;
-                    break;
-                case APP_VEHICLE_CMD_AC_LEVEL2:
-                    acuData[0] = CAN_ACU_FAN_LEVEL2;
-                    break;
-                case APP_VEHICLE_CMD_AC_LEVEL3:
-                    acuData[0] = CAN_ACU_FAN_LEVEL3;
-                    break;
-                default:
-                    break;
-            }
-            if (APP_CAN_SendIVI_ACU(acuData) != 0)
-            {
-                LOG_ERR("CAN ACU send failed, cmd=%d", cmd);
-                return APP_VEHICLE_RESULT_FAIL;
-            }
-            vTaskDelay(pdMS_TO_TICKS(10U));
-            return APP_VEHICLE_RESULT_OK;
-        }
-
-        /* ---------- 不需 CAN 发送的命令：直接返回 OK ---------- */
         case APP_VEHICLE_CMD_WEATHER_QUERY:
         case APP_VEHICLE_CMD_DATE_QUERY:
         case APP_VEHICLE_CMD_TIME_QUERY:
@@ -240,19 +264,59 @@ uint8_t canData[8] = {0};           /**< 初始化为全 0x00（无请求） */
         case APP_VEHICLE_CMD_15S_EXIT_WAKEUP:
             return APP_VEHICLE_RESULT_OK;
 
+        case APP_VEHICLE_CMD_AC_HEAT_ON:
+            acuData[0] = CAN_ACU_FAN_LEVEL1;
+            acuData[1] = CAN_ACU_MODE_HEAT;
+            expectedFan  = 1U;
+            expectedMode = 1U;
+            break;
+
+        case APP_VEHICLE_CMD_AC_COOL_ON:
+            acuData[0] = CAN_ACU_FAN_LEVEL1;
+            acuData[1] = CAN_ACU_MODE_COOL;
+            expectedFan  = 1U;
+            expectedMode = 2U;
+            break;
+
+        case APP_VEHICLE_CMD_AC_OFF:
+            acuData[0] = CAN_ACU_FAN_OFF;
+            acuData[1] = CAN_ACU_MODE_OFF;
+            expectedFan  = 0U;
+            expectedMode = 0U;
+            break;
+
         default:
-            LOG_WARN("Unknown vehicle cmd: %d", cmd);
-            return APP_VEHICLE_RESULT_FAIL;
+            pMap = App_VehicleFindCmdMap(cmd);
+            if (pMap == NULL)
+            {
+                LOG_WARN("Unknown vehicle cmd: %d", cmd);
+                return APP_VEHICLE_RESULT_FAIL;
+            }
+
+            return App_VehicleExecuteByMap(pMap);
     }
 
-    if (APP_CAN_SendIVI_BCM(canData) != 0)
+    oldTick = g_vehicleStatus.acu_ivi_tick;
+
+    if (APP_CAN_SendIVI_ACU(acuData) != 0)
     {
-        LOG_ERR("CAN BCM send failed, cmd=%d", cmd);
         return APP_VEHICLE_RESULT_FAIL;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(10U));
-    return APP_VEHICLE_RESULT_OK;
+    if (App_VehicleWaitRxUpdate(&g_vehicleStatus.acu_ivi_tick,
+                                oldTick,
+                                APP_VEHICLE_RX_WAIT_MS) != pdTRUE)
+    {
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    if ((g_vehicleStatus.ac_fan_gear == expectedFan) &&
+        (g_vehicleStatus.ac_mode == expectedMode))
+    {
+        return APP_VEHICLE_RESULT_OK;
+    }
+
+    return APP_VEHICLE_RESULT_FAIL;
 }
 
 /**
@@ -265,9 +329,6 @@ QueueHandle_t Vehicle_GetRxQueue(void)
 }
 
 /* ===== 统一控制入口 ===== */
-
-
-
 
 /**
  * @brief  统一控制请求入口（同步等待结果）。

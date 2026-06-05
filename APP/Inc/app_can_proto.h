@@ -27,6 +27,7 @@
 #define __APP_CAN_PROTO_H__
 
 #include <stdint.h>
+#include "app_can.h"
 
 /* ================================================================== */
 /* 雷迈协议 — 报文 ID（J1939 29-bit 扩展帧）                            */
@@ -41,6 +42,8 @@
 #define CAN_ID_MCU_DPLY1            0x18FF17EFU     /**< MCU → 仪表: 档位/车速/SOC   */
 #define CAN_ID_BCM_TBOX1            0x18FF271DU     /**< BCM → 各节点: 门锁/灯光     */
 #define CAN_ID_BCM_TBOX2            0x18FE271DU     /**< BCM → 各节点: 故障码/传感器  */
+#define CAN_ID_ACU_IVI              0x18FF181CU     /**< ACU → IVI: 空调状态反馈     */
+#define CAN_ID_SRCM                 0x18FF271FU     /**< SRCM: 天窗/风扇状态         */
 
 /* ================================================================== */
 /* 雷迈协议 — IVI_BCM 信号定义 (ID=0x18FF1D18, DLC=8, 100ms 周期)      */
@@ -161,6 +164,90 @@
 /* 辅助宏: 写 2-bit / 3-bit 信号到目标字节                              */
 /* ================================================================== */
 
+/* ================================================================== */
+/* 车辆实时状态结构体（由 CAN RX 解析函数填充）                          */
+/* ================================================================== */
+
+/**
+ * @brief  车辆各 ECU 上报的实时状态快照
+ * @note   每条 RX 报文的解析函数只更新自己负责的字段。
+ *         App_VehicleExecute 发送 CAN 命令后读取对应字段判断执行结果。
+ *
+ *         信号来源：
+ *         - BCM_TBOX1 (0x18FF271D): 灯光/门锁/车窗/雨刮/后视镜等车身状态
+ *         - ACU_IVI   (0x18FF181C): 空调风机挡位/模式/故障码
+ *         - SRCM      (0x18FF271F): 天窗风扇/阅读灯状态
+ */
+typedef struct
+{
+    /* ===== BCM_TBOX1 反馈 (0x18FF271D) ===== */
+
+    /* --- Data[0] --- */
+    uint8_t start_status;           /**< Byte0.0: start档状态                */
+    uint8_t door_lock_status;       /**< Byte0.1: 门锁状态 (0=关锁,1=开锁)   */
+    uint8_t vehicle_locate_state;   /**< Byte0.5: 寻车状态                  */
+    uint8_t sos_state;              /**< Byte0.6: 一键报警状态               */
+
+    /* --- Data[1] --- */
+    uint8_t window_inhibit_state;   /**< Byte1.1: 车窗禁止状态               */
+    uint8_t trunk_status_monitor;   /**< Byte1.2: 后备箱状态检测             */
+    uint8_t hazard_light_switch;    /**< Byte1.3: 双闪灯开关输入             */
+    uint8_t one_click_start_in;     /**< Byte1.4: 一键启动输入               */
+    uint8_t collision_detection;    /**< Byte1.5: 碰撞信号触发               */
+
+    /* --- Data[2] --- */
+    uint8_t door_lock_status_mon;   /**< Byte2.0: 门锁状态检测               */
+    uint8_t fl_door_status;         /**< Byte2.1: 左前门 (0=Close,1=Open)    */
+    uint8_t rf_door_status;         /**< Byte2.2: 右前门                     */
+    uint8_t lr_door_status;         /**< Byte2.3: 左后门                     */
+    uint8_t rr_door_status;         /**< Byte2.4: 右后门                     */
+    uint8_t reading_light_out;      /**< Byte2.5: 阅读灯输出                 */
+    uint8_t rh_turn_light_out;      /**< Byte2.6: 右转向灯输出               */
+    uint8_t lh_turn_light_out;      /**< Byte2.7: 左转向灯输出               */
+
+    /* --- Data[3] --- */
+    uint8_t low_beam_light_out;     /**< Byte3.0: 近光灯输出                 */
+    uint8_t high_beam_light_status; /**< Byte3.1: 远光灯状态                 */
+    uint8_t trunk_unlock_out;       /**< Byte3.2: 后备箱解锁输出             */
+    uint8_t parking_light_out;      /**< Byte3.3: 小灯输出                   */
+    uint8_t wiper_wash_out;         /**< Byte3.4: 洗涤输出                   */
+    uint8_t central_lock_state;     /**< Byte3.6-7 (2bit): 中控锁            */
+
+    /* --- Data[4] --- */
+    uint8_t rear_defrost_out;       /**< Byte4.0: 后除霜输出                 */
+    uint8_t rear_fog_light_status;  /**< Byte4.2: 后雾灯状态                 */
+    uint8_t reverse_light_status;   /**< Byte4.3: 倒车灯状态                 */
+    uint8_t horn_out;               /**< Byte4.4: 喇叭输出                   */
+    uint8_t front_wiper_status;     /**< Byte4.5-6 (2bit): 前雨刮状态        */
+
+    /* --- Data[5] --- */
+    uint8_t rf_window_pos;          /**< Byte5.0-1 (2bit): 右前车窗          */
+    uint8_t rr_window_pos;          /**< Byte5.2-3 (2bit): 右后车窗          */
+    uint8_t lf_window_pos;          /**< Byte5.4-5 (2bit): 左前车窗          */
+    uint8_t lr_window_pos;          /**< Byte5.6-7 (2bit): 左后车窗          */
+
+    /* --- Data[6] --- */
+    uint8_t outer_mirror_fold;      /**< Byte6.0-1 (2bit): 后视镜折叠        */
+    uint8_t one_click_start_status; /**< Byte6.2-3 (2bit): 一键启动状态      */
+
+    /* ===== ACU_IVI 反馈 (0x18FF181C) ===== */
+    uint8_t ac_fan_gear;            /**< 空调风机挡位(0=关,1=1档,2=2档,3=3档)*/
+    uint8_t ac_mode;                /**< 空调模式(0=关,1=热,2=冷)            */
+    uint8_t ac_fault_code;          /**< 空调故障码                          */
+
+    /* ===== SRCM 反馈 (0x18FF271F) ===== */
+    uint8_t sr_reading_lamp;        /**< 阅读灯状态(0=关,1=开)               */
+    uint8_t sr_fan_level;           /**< 天窗风扇挡位(0~3)                  */
+
+    /* ===== 时间戳 ===== */
+    uint32_t bcm_tbox1_tick;     /* 最近一次收到 BCM_TBOX1 的 tick。 */
+    uint32_t acu_ivi_tick;       /* 最近一次收到 ACU_IVI 的 tick。 */
+    uint32_t srcm_tick;          /* 最近一次收到 SRCM 的 tick。 */
+} VehicleStatus_t;
+
+/** @brief  全局车辆状态，CAN_RxTask 实时更新，VehicleTask 读取 */
+extern VehicleStatus_t g_vehicleStatus;
+
 /**
  * @brief  将 2-bit 信号值写入目标字节的特定位
  * @param  val  信号值 (0x0 ~ 0x3)
@@ -204,5 +291,9 @@ int APP_CAN_SendIVI_MCU(uint8_t *data);
  * @return 0 = 成功, -1 = 发送失败
  */
 int APP_CAN_SendIVI_ACU(uint8_t *data);
+
+void CAN_ParseBCM_TBOX1(const uint8_t *data);
+void CAN_ParseACU_IVI(const uint8_t *data);
+void CAN_ParseSRCM(const uint8_t *data);
 
 #endif /* __APP_CAN_PROTO_H__ */

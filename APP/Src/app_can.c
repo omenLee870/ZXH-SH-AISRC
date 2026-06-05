@@ -29,6 +29,7 @@
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "task.h"
+#include "app_can_proto.h"
 
 /* ================================================================== */
 /* 全局 CAN 句柄                                                       */
@@ -311,15 +312,41 @@ QueueHandle_t CAN_GetRxQueue(void)
     return s_canRxQueue;
 }
 
+/* ================================================================== */
+/* CAN_ProcessRxFrame — RX 帧分发入口                                   */
+/* ================================================================== */
+
 /**
- * @brief  CAN 接收帧处理（从 CAN_RxTask 调用）
- * @param  frame 指向 CAN 接收帧的指针
- * @note
+ * @brief  CAN 接收帧分发处理（由 CAN_RxTask 调用）
+ * @param  frame const CAN_RxFrame_t*
+ * @note   接收链路：
+ *         CAN_IRQHandler → HAL_CAN_RxCpltCallback → xQueueSendFromISR
+ *           → CAN_RxTask: xQueueReceive → CAN_ProcessRxFrame → 解析函数
  */
 void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame)
 {
-    LOG_DBG("CAN RX id=0x%08lX len=%d %02X %02X %02X %02X %02X %02X %02X %02X",
-            frame->id, frame->dlc,
-            frame->data[0], frame->data[1], frame->data[2], frame->data[3],
-            frame->data[4], frame->data[5], frame->data[6], frame->data[7]);
+    if (frame == NULL)
+    {
+        return;
+    }
+
+    switch (frame->id)
+    {
+        case CAN_ID_BCM_TBOX1:
+            CAN_ParseBCM_TBOX1(frame->data);
+            break;
+
+        case CAN_ID_ACU_IVI:
+            CAN_ParseACU_IVI(frame->data);
+            break;
+
+        case CAN_ID_SRCM:
+            CAN_ParseSRCM(frame->data);
+            break;
+
+        default:
+            /* 不关心的报文，仅打日志 */
+            LOG_DBG("CAN RX unhandled id=0x%08lX len=%d", frame->id, frame->dlc);
+            break;
+    }
 }

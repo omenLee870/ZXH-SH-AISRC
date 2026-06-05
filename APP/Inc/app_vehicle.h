@@ -105,11 +105,7 @@ AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
  * @brief  执行车辆控制命令。
  * @param  cmd 内部统一命令编号。
  * @return 执行结果。
- * @note   TODO: CAN 模块完成后，替换为：
- *         1. 安全条件判断（车速、档位等）
- *         2. CAN 报文发送
- *         3. 等待 CAN 应答或超时
- *         当前暂时 10ms 后返回成功（模拟）。
+ * @note   
  */
 AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd);
 
