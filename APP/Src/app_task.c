@@ -154,11 +154,34 @@ static void App_VoiceTask(void *pvParameters)
 
     while (1)
     {
-        /* 阻塞等待语音帧（ISR 通过队列扔进来的） */
-        if (xQueueReceive(Voice_GetRxQueue(), &frame, portMAX_DELAY) == pdPASS)
+        if (xQueueReceive(Voice_GetRxQueue(), &frame, pdMS_TO_TICKS(100U)) == pdPASS)
         {
-            /* 应答 */
             App_VoiceProcessFrame(&frame);
+        }
+        else if (Voice_WakePending())
+        {
+            /* 三次检测消抖 */
+            uint8_t highCount = 0;
+            uint8_t i;
+
+            for (i = 0; i < 3; i++)
+            {
+                vTaskDelay(pdMS_TO_TICKS(5U));           /* 间隔 5ms */
+                if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_SET)
+                {
+                    highCount++;
+                }
+            }
+
+            if (highCount >= 3)                           /* 三次全是高 → 确认 */
+            {
+                Voice_SendFrame(VOICE_CMD_WAKEUP, 0x00, NULL);
+                LOG_INFO("Wake frame sent (PA4 confirmed)");
+            }
+            else
+            {
+                LOG_DBG("PA4 bounce ignored (highCount=%d)", highCount);
+            }
         }
     }
 }
