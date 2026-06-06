@@ -35,6 +35,7 @@
 /* 全局 CAN 句柄                                                       */
 /* ================================================================== */
 CAN_HandleTypeDef CanHandle;
+CAN_FilterTypeDef CanFilter = {0};
 
 #define CAN_RX_QUEUE_LENGTH     16          /**< 接收队列容量（帧数）     */
 static QueueHandle_t s_canRxQueue = NULL;   /**< CAN 接收队列句柄         */
@@ -57,20 +58,11 @@ static QueueHandle_t s_canRxQueue = NULL;   /**< CAN 接收队列句柄         
 void HAL_CAN_MspInit(CAN_HandleTypeDef *hcan)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    /******************** CAN 时钟源 = PLL (72MHz) ********************/
-    /**
-     * 选择 PLL 输出作为 CAN 外设时钟。
-     * PLL 在 main.c 的 APP_SystemClockConfig() 中已配置为 HSI×3=72MHz。
-     * 这里与官方例程的差异只保留在时钟源：官方使用 HSE，本项目硬件使用 PLL。
-     * 等待 PLL 就绪标志位（PLLRDY = 1）后再继续
-     */
     __HAL_RCC_CAN_CONFIG(RCC_CANCLKSOURCE_PLL);
     while (__HAL_RCC_GET_FLAG(RCC_FLAG_PLLRDY) == RESET) {}
 
     /******************** 使能外设时钟 ********************/
     __HAL_RCC_CAN1_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
 
     /******************** 配置 CAN 引脚 ********************/
     /**
@@ -165,24 +157,45 @@ void APP_CAN_Init(void)
      *   - MaskID = 0x0                  : 该 HAL 中 0 表示对应 ID 位参与比较
      *   - FilterFormat/MaskFormat       : 全 F 表示接受所有 LLC 格式
      */
-    CanFilter.IdType         = CAN_EXTENDED_ID;
-    CanFilter.FilterChannel  = CAN_FILTER_CHANNEL_0;
-    CanFilter.Rank           = CAN_FILTER_RANK_CHANNEL_NUMBER;
-    CanFilter.FilterID       = 0x18FF1D18;
-    CanFilter.FilterFormat   = 0xFFFFFFFF;
-    CanFilter.MaskID         = 0x0;
-    CanFilter.MaskFormat     = 0xFFFFFFFF;
-
-    if (HAL_CAN_ConfigFilter(&CanHandle, &CanFilter) != HAL_OK)
+    uint8_t i;
+    const uint32_t acceptIds[] =
     {
-        LOG_ERR("CAN filter config failed");
-        return;
+        CAN_ID_BCM_TBOX1,      /* BCM → 各节点：门锁、灯光、雨刮等状态反馈。 */
+        CAN_ID_ACU_IVI,        /* ACU → IVI：空调风机、模式、故障状态反馈。 */
+        CAN_ID_SRCM,           /* SRCM → IVI：天窗风扇、阅读灯状态反馈。 */
+        CAN_ID_MCU_DPLY1,      /* MCU → 仪表/IVI：档位、车速、SOC、电压等反馈。 */
+        CAN_ID_BCM_TBOX2       /* BCM → 各节点：整车故障、传感器状态反馈。 */
+    };
+
+    for (i = 0U; i < (sizeof(acceptIds) / sizeof(acceptIds[0])); i++)
+    {
+        CanFilter.IdType         = CAN_EXTENDED_ID;
+        CanFilter.FilterChannel  = (uint32_t)i;
+        CanFilter.Rank           = CAN_FILTER_RANK_CHANNEL_NUMBER;
+        CanFilter.FilterID       = acceptIds[i];
+        CanFilter.FilterFormat   = 0xFFFFFFFF;
+        CanFilter.MaskID         = 0x0;
+        CanFilter.MaskFormat     = 0xFFFFFFFF;
+
+        if (HAL_CAN_ConfigFilter(&CanHandle, &CanFilter) != HAL_OK)
+        {
+            LOG_ERR("CAN filter config failed, channel=%d", i);
+            return;
+        }
     }
 
     /******************** 3. 启动 CAN 总线 ********************/
     if (HAL_CAN_Start(&CanHandle) != HAL_OK)
     {
         LOG_ERR("CAN start failed");
+        return;
+    }
+
+    /* 限制发送错误后的自动重发次数，避免无 ACK 或位时序不匹配时 PTB 长时间占用。 */
+    if (HAL_CAN_ConfigRetransmissionLimit(&CanHandle,
+                                        CAN_AUTO_RETRANSMISSION_3TRANSFERS) != HAL_OK)
+    {
+        LOG_ERR("CAN retransmission limit config failed");
         return;
     }
 
@@ -222,6 +235,27 @@ int APP_CAN_Send(uint32_t id, uint8_t *data, uint8_t len)
     CanTxHeader.FrameFormat  = CAN_FRAME_CLASSIC;
     CanTxHeader.Handle       = 0x0;
     CanTxHeader.DataLength   = dlc;
+
+    /******************** 等待 PTB 空闲 ********************/
+    if (READ_BIT(CanHandle.Instance->MCR, CAN_MCR_TPE) != 0U)
+    {
+        uint32_t tick;
+
+        /* PTB 正在发送上一帧，先请求中止，避免 HAL_CAN_AddMessageToTxFifo() 因 PTB 忙返回失败。 */
+        if (HAL_CAN_AbortTxRequest(&CanHandle, CAN_TXFIFO_PTB_SEND) != HAL_OK)
+        {
+            return -1;
+        }
+
+        tick = HAL_GetTick();
+        while (READ_BIT(CanHandle.Instance->MCR, CAN_MCR_TPE) != 0U)
+        {
+            if ((HAL_GetTick() - tick) > 10U)
+            {
+                return -1;
+            }
+        }
+    }
 
     /******************** 写入 PTB ********************/
     if (HAL_CAN_AddMessageToTxFifo(&CanHandle, &CanTxHeader,
@@ -270,9 +304,14 @@ void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef *hcan)
     CAN_RxHeaderTypeDef CanRxHeader = {0};
     CAN_RxFrame_t frame = {0};
     BaseType_t pxHigherPriorityTaskWoken = pdFALSE;
+    HAL_StatusTypeDef ret;
 
-    HAL_CAN_GetRxMessage(hcan, &CanRxHeader, frame.data);
-    
+    ret = HAL_CAN_GetRxMessage(hcan, &CanRxHeader, frame.data);
+    if (ret != HAL_OK)
+    {
+        return;
+    }
+        
     frame.id  = CanRxHeader.Identifier;
     frame.dlc = CanRxHeader.DataLength;
 

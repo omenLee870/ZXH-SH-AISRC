@@ -33,10 +33,10 @@
 /*   下面这组参数保持 250Kbps，并与此前 J-Link 看到的寄存器值一致：        */
 /*   波特率 = 72MHz / 12 / (1 + 17 + 6) = 250Kbps                       */
 /* ================================================================== */
-#define CAN_PRESCALER  12U
+#define CAN_PRESCALER  11U
 #define CAN_SJW        4U
-#define CAN_SEG1       17U
-#define CAN_SEG2       6U
+#define CAN_SEG1       19U
+#define CAN_SEG2       7U
 
 /* ================================================================== */
 /* CAN 接收帧结构体                                                     */
