@@ -185,3 +185,69 @@ void CAN_ParseSRCM(const uint8_t *data)
             g_vehicleStatus.sr_fan_level);
 }
 
+/**
+ * @brief  解析 MCU_DPLY1 报文 (0x18FF17EF)
+ * @param  data 8 字节 CAN 帧数据
+ * @note   MCU 发给仪表盘的状态报文（20ms 周期），IVI 监听获取车速/档位/SOC。
+ *
+ *         Data[0]: 档位[0-1] 运行模式[2-3] 刹车[4] 控制器[5] 限功率[6] P档[7]
+ *         Data[1]: MCU 故障码
+ *         Data[2]: 车速 (km/h)
+ *         Data[3]: SOC 电量 (%)
+ *         Data[4]: 预留
+ *         Data[5-6]: 电池总电压 (16bit, 精度 0.1V)
+ *         Data[7]: 预留
+ */
+void CAN_ParseMCU_DPLY1(const uint8_t *data)
+{
+    /* Data[0] */
+    g_vehicleStatus.mcu_gear             = (data[0] >> 0) & 0x03;  /* 2-bit */
+    g_vehicleStatus.mcu_brake            = (data[0] >> 4) & 0x01;
+    g_vehicleStatus.mcu_controller_ready = (data[0] >> 5) & 0x01;
+    g_vehicleStatus.mcu_power_limit      = (data[0] >> 6) & 0x01;
+    g_vehicleStatus.mcu_gear_p           = (data[0] >> 7) & 0x01;
+
+    /* Data[1] */  g_vehicleStatus.mcu_fault_code  = data[1];
+    /* Data[2] */  g_vehicleStatus.mcu_speed        = data[2];
+    /* Data[3] */  g_vehicleStatus.mcu_soc          = data[3];
+    /* Data[5-6] (16bit Motorola LSB) */
+    g_vehicleStatus.mcu_pack_voltage = data[5]
+                                     | ((uint16_t)data[6] << 8);
+
+    g_vehicleStatus.mcu_dply1_tick = xTaskGetTickCount();
+
+    LOG_DBG("MCU_DPLY1 RX: Gear=%d Brake=%d Speed=%d SOC=%d%% Volt=%d.%dV",
+            g_vehicleStatus.mcu_gear,
+            g_vehicleStatus.mcu_brake,
+            g_vehicleStatus.mcu_speed,
+            g_vehicleStatus.mcu_soc,
+            g_vehicleStatus.mcu_pack_voltage / 10,
+            g_vehicleStatus.mcu_pack_voltage % 10);
+}
+
+/**
+ * @brief  解析 BCM_TBOX2 报文 (0x18FE271D)
+ * @param  data 8 字节 CAN 帧数据
+ * @note   BCM 广播给各节点的整车故障码/传感器报文（100ms 周期），纯监听用。
+ *
+ *         Data[0]: 故障等级 (0=无,1=一级,2=二级,3=三级)
+ *         Data[1]: 故障码
+ *         Data[2].0: 座椅传感器状态 (0=未触发,1=触发)
+ *         Data[2].1: 光敏传感器状态 (0=未触发,1=触发)
+ *         Data[3-7]: 预留
+ */
+void CAN_ParseBCM_TBOX2(const uint8_t *data)
+{
+    g_vehicleStatus.bcm_fault_level  = data[0];
+    g_vehicleStatus.bcm_fault_code   = data[1];
+    g_vehicleStatus.bcm_seat_sensor  = (data[2] >> 0) & 0x01;
+    g_vehicleStatus.bcm_light_sensor = (data[2] >> 1) & 0x01;
+
+    g_vehicleStatus.bcm_tbox2_tick = xTaskGetTickCount();
+
+    LOG_DBG("BCM_TBOX2 RX: FaultLvl=%d Code=%d Seat=%d Light=%d",
+            g_vehicleStatus.bcm_fault_level,
+            g_vehicleStatus.bcm_fault_code,
+            g_vehicleStatus.bcm_seat_sensor,
+            g_vehicleStatus.bcm_light_sensor);
+}

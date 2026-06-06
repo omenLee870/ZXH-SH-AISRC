@@ -344,8 +344,15 @@ void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame)
             CAN_ParseSRCM(frame->data);
             break;
 
+        case CAN_ID_MCU_DPLY1:
+            CAN_ParseMCU_DPLY1(frame->data);
+            break;
+
+        case CAN_ID_BCM_TBOX2:
+            CAN_ParseBCM_TBOX2(frame->data);
+            break;
+
         default:
-            /* 不关心的报文，仅打日志 */
             LOG_DBG("CAN RX unhandled id=0x%08lX len=%d", frame->id, frame->dlc);
             break;
     }

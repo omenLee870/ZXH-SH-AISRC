@@ -239,6 +239,25 @@ typedef struct
     uint8_t sr_reading_lamp;        /**< 阅读灯状态(0=关,1=开)               */
     uint8_t sr_fan_level;           /**< 天窗风扇挡位(0~3)                  */
 
+    /* ===== MCU_DPLY1 反馈 (0x18FF17EF) ===== */
+    uint8_t mcu_gear;               /**< 档位: 0=空挡,1=前进,2=后退        */
+    uint8_t mcu_brake;              /**< 刹车: 0=未踩,1=踩下              */
+    uint8_t mcu_gear_p;             /**< P档: 0=关闭,1=开启               */
+    uint8_t mcu_controller_ready;   /**< 控制器: 0=未就绪,1=就绪          */
+    uint8_t mcu_power_limit;        /**< 限功率: 0=正常,1=限功率          */
+    uint8_t mcu_fault_code;         /**< MCU 故障码                        */
+    uint8_t mcu_speed;              /**< 车速 (km/h)                       */
+    uint8_t mcu_soc;                /**< SOC 电量 (%)                      */
+    uint16_t mcu_pack_voltage;      /**< 电池总电压 (x0.1V)                */
+    uint32_t mcu_dply1_tick;        /**< 最后收到 MCU_DPLY1 的 tick       */
+
+    /* ===== BCM_TBOX2 反馈 (0x18FE271D) ===== */
+    uint8_t bcm_fault_level;        /**< 整车故障等级: 0=无,1=一级,2=二级,3=三级 */
+    uint8_t bcm_fault_code;         /**< 整车故障码                        */
+    uint8_t bcm_seat_sensor;        /**< 座椅传感器: 0=未触发,1=触发       */
+    uint8_t bcm_light_sensor;       /**< 光敏传感器: 0=未触发,1=触发       */
+    uint32_t bcm_tbox2_tick;        /**< 最后收到 BCM_TBOX2 的 tick        */
+
     /* ===== 时间戳 ===== */
     uint32_t bcm_tbox1_tick;     /* 最近一次收到 BCM_TBOX1 的 tick。 */
     uint32_t acu_ivi_tick;       /* 最近一次收到 ACU_IVI 的 tick。 */
@@ -294,6 +313,8 @@ int APP_CAN_SendIVI_ACU(uint8_t *data);
 
 void CAN_ParseBCM_TBOX1(const uint8_t *data);
 void CAN_ParseACU_IVI(const uint8_t *data);
+void CAN_ParseMCU_DPLY1(const uint8_t *data);
+void CAN_ParseBCM_TBOX2(const uint8_t *data);
 void CAN_ParseSRCM(const uint8_t *data);
 
 #endif /* __APP_CAN_PROTO_H__ */
