@@ -8,13 +8,15 @@
 #define APP_LED_TASK_STACK_WORDS        96U     /* LED 任务栈，单位 word，仅翻转 GPIO 和延时，保持较小即可。 */
 #define APP_VOICE_TASK_STACK_WORDS      256U    /* 语音任务栈。                 */
 #define APP_VEHICLE_TASK_STACK_WORDS    256U    /* 车辆控制栈。 */
-#define APP_CAN_MON_TASK_STACK_WORDS    192U    /* CAN 监控任务栈，用于周期读取状态并打印诊断日志。 */
+#define APP_CAN_MON_TASK_STACK_WORDS    256U    /* CAN 监控任务栈*/
+#define APP_WDG_TASK_STACK_WORDS        64U     /* 看门狗喂狗任务，极小栈即可 */
 
 #define APP_START_TASK_PRIORITY         2U      /* 启动任务优先级，创建完业务任务后会删除自己。 */
 #define APP_LED_TASK_PRIORITY           1U      /* LED 心跳任务优先级，低于启动任务。 */
 #define APP_VOICE_TASK_PRIORITY         2U      /* 语音任务优先级。*/
-#define APP_VEHICLE_TASK_PRIORITY       3U      /* 车辆控制（最高）。← 新增    */
-#define APP_CAN_MON_TASK_PRIORITY       1U      /* CAN 监控任务优先级，仅输出调试信息，保持较低。 */
+#define APP_VEHICLE_TASK_PRIORITY       3U      /* 车辆控制（最高）。*/
+#define APP_CAN_MON_TASK_PRIORITY       2U      /* CAN 监控任务优先级 */
+#define APP_WDG_TASK_PRIORITY           0U      /* 看门狗任务：最低优先级 */
 
 #define APP_LED_PERIOD_MS               500U    /* PB0 心跳灯翻转周期，单位 ms。 */
 #define APP_CAN_MON_PERIOD_MS           500U    /* CAN 状态打印周期，单位 ms，用于观察接收错误计数变化。 */
@@ -26,6 +28,7 @@ static void App_LedTask(void *pvParameters);
 static void App_VoiceTask(void *pvParameters);
 static void App_VehicleTask(void *pvParameters);
 static void CAN_RxTask(void *pvParameters);
+static void App_WatchdogTask(void *pvParameters);
 
 /**                                                                                                                                         
  * @brief  创建应用启动任务。
@@ -113,6 +116,18 @@ static void App_StartTask(void *pvParameters)
     if (ret != pdPASS)
     {
         LOG_ERR("Failed to create CAN_Rx task!");
+        APP_ErrorHandler();
+    }
+
+    /******************** 创建看门狗喂狗任务 ********************/
+    ret = xTaskCreate(App_WatchdogTask,
+                      "IWDG",
+                      APP_WDG_TASK_STACK_WORDS,
+                      NULL,
+                      APP_WDG_TASK_PRIORITY,
+                      NULL);
+    if (ret != pdPASS)
+    {
         APP_ErrorHandler();
     }
 
@@ -239,5 +254,22 @@ static void CAN_RxTask(void *pvParameters)
         {
             CAN_ProcessRxFrame(&frame);
         }
+    }
+}
+
+/* ===== 看门狗任务 ===== */
+
+/**
+ * @brief  独立看门狗喂狗任务。
+ * @note
+ */
+static void App_WatchdogTask(void *pvParameters)
+{
+    (void)pvParameters;
+
+    while (1)
+    {
+        APP_IWDG_Feed();
+        vTaskDelay(pdMS_TO_TICKS(500U));
     }
 }

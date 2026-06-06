@@ -10,5 +10,6 @@
 #include "app_vehicle.h"
 #include "app_can.h"
 #include "app_can_proto.h"
+#include "app_iwdg.h"
 
 #endif /* __APP_H__ */

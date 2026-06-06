@@ -59,6 +59,8 @@ int main(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
+    /* 看门狗 */
+    APP_IWDG_Init();
     /* 初始化调试串口 */
     App_UART_Init();
     /* 初始化语音模块 */
@@ -100,7 +102,7 @@ static void APP_SystemClockConfig(void)
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_24MHz;  /* Configure HSI clock 8MHz */
   RCC_OscInitStruct.HSEState = RCC_HSE_OFF;                         /* Close HSE */
   /*RCC_OscInitStruct.HSEFreq = RCC_HSE_16_32MHz;*/
-  RCC_OscInitStruct.LSIState = RCC_LSI_OFF;                         /* Close LSI */
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;                         /* Close LSI */
   RCC_OscInitStruct.LSEState = RCC_LSE_OFF;                         /* Close LSE */
   /*RCC_OscInitStruct.LSEDriver = RCC_LSEDRIVE_MEDIUM;*/
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;                     /* Close PLL */
