@@ -39,6 +39,7 @@
 #define CAN_ID_IVI_ACU              0x18FF1C18U     /**< IVI → ACU: 空调控制   */
 
 /* ---------- IVI 接收 (RX) ---------- */
+#define CAN_ID_TBOX_DPLY            0x18FF1727U     /* TBOX -> IVI: 天气、日期、时间等信息。 */
 #define CAN_ID_MCU_DPLY1            0x18FF17EFU     /**< MCU → 仪表: 档位/车速/SOC   */
 #define CAN_ID_BCM_TBOX1            0x18FF271DU     /**< BCM → 各节点: 门锁/灯光     */
 #define CAN_ID_BCM_TBOX2            0x18FE271DU     /**< BCM → 各节点: 故障码/传感器  */
@@ -258,6 +259,17 @@ typedef struct
     uint8_t bcm_light_sensor;       /**< 光敏传感器: 0=未触发,1=触发       */
     uint32_t bcm_tbox2_tick;        /**< 最后收到 BCM_TBOX2 的 tick        */
 
+    /* ===== TBOX_DPLY 反馈 (0x18FF1727) ===== */
+    uint8_t tbox_weather;       /* 天气，0x0~0xE。 */
+    uint8_t tbox_temp_raw;      /* 温度原始值，实际温度 = raw - 40。 */
+    uint8_t tbox_wind_speed;    /* 风速，0x0~0xC。 */
+    uint8_t tbox_year;          /* 年份偏移，实际年份 = 2000 + year。 */
+    uint8_t tbox_month;         /* 月，1~12。 */
+    uint8_t tbox_date;          /* 日，1~31。 */
+    uint8_t tbox_hour;          /* 小时，0~24。 */
+    uint8_t tbox_min;           /* 分钟，0~60。 */
+    uint32_t tbox_dply_tick;    /* 最近一次收到 TBOX_DPLY 的 tick。 */
+
     /* ===== 时间戳 ===== */
     uint32_t bcm_tbox1_tick;     /* 最近一次收到 BCM_TBOX1 的 tick。 */
     uint32_t acu_ivi_tick;       /* 最近一次收到 ACU_IVI 的 tick。 */
@@ -315,6 +327,7 @@ void CAN_ParseBCM_TBOX1(const uint8_t *data);
 void CAN_ParseACU_IVI(const uint8_t *data);
 void CAN_ParseMCU_DPLY1(const uint8_t *data);
 void CAN_ParseBCM_TBOX2(const uint8_t *data);
+void CAN_ParseTBOX_DPLY(const uint8_t *data);
 void CAN_ParseSRCM(const uint8_t *data);
 
 #endif /* __APP_CAN_PROTO_H__ */

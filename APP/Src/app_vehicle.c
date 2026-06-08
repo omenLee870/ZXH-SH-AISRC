@@ -86,6 +86,9 @@ static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
     { APP_VEHICLE_CMD_SUNROOF_FAN_L2,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_L3,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL3, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             3U },
 
+    { APP_VEHICLE_CMD_AC_HEAT_ON,        APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_HEAT,                                              offsetof(VehicleStatus_t, ac_mode),                  1U },
+    { APP_VEHICLE_CMD_AC_COOL_ON,        APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_COOL,                                              offsetof(VehicleStatus_t, ac_mode),                  2U },
+    { APP_VEHICLE_CMD_AC_OFF,            APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_OFF,                                               offsetof(VehicleStatus_t, ac_mode),                  0U },
     { APP_VEHICLE_CMD_AC_LEVEL1,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL1,                                             offsetof(VehicleStatus_t, ac_fan_gear),              1U },
     { APP_VEHICLE_CMD_AC_LEVEL2,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL2,                                             offsetof(VehicleStatus_t, ac_fan_gear),              2U },
     { APP_VEHICLE_CMD_AC_LEVEL3,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL3,                                             offsetof(VehicleStatus_t, ac_fan_gear),              3U }
@@ -243,10 +246,6 @@ BaseType_t App_VehicleInit(void)
 AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 {
     const AppVehicleCmdMap_t *pMap;      /* 命令映射表项。 */
-    uint8_t acuData[8] = {0};            /* IVI_ACU 控制帧数据。 */
-    uint32_t oldTick;                    /* 发送命令前 ACU_IVI 反馈更新时间。 */
-    uint8_t expectedFan;                 /* 期望风机反馈值。 */
-    uint8_t expectedMode;                /* 期望模式反馈值。 */
 
     switch (cmd)
     {
@@ -264,27 +263,6 @@ AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
         case APP_VEHICLE_CMD_15S_EXIT_WAKEUP:
             return APP_VEHICLE_RESULT_OK;
 
-        case APP_VEHICLE_CMD_AC_HEAT_ON:
-            acuData[0] = CAN_ACU_FAN_LEVEL1;
-            acuData[1] = CAN_ACU_MODE_HEAT;
-            expectedFan  = 1U;
-            expectedMode = 1U;
-            break;
-
-        case APP_VEHICLE_CMD_AC_COOL_ON:
-            acuData[0] = CAN_ACU_FAN_LEVEL1;
-            acuData[1] = CAN_ACU_MODE_COOL;
-            expectedFan  = 1U;
-            expectedMode = 2U;
-            break;
-
-        case APP_VEHICLE_CMD_AC_OFF:
-            acuData[0] = CAN_ACU_FAN_OFF;
-            acuData[1] = CAN_ACU_MODE_OFF;
-            expectedFan  = 0U;
-            expectedMode = 0U;
-            break;
-
         default:
             pMap = App_VehicleFindCmdMap(cmd);
             if (pMap == NULL)
@@ -295,28 +273,6 @@ AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 
             return App_VehicleExecuteByMap(pMap);
     }
-
-    oldTick = g_vehicleStatus.acu_ivi_tick;
-
-    if (APP_CAN_SendIVI_ACU(acuData) != 0)
-    {
-        return APP_VEHICLE_RESULT_FAIL;
-    }
-
-    if (App_VehicleWaitRxUpdate(&g_vehicleStatus.acu_ivi_tick,
-                                oldTick,
-                                APP_VEHICLE_RX_WAIT_MS) != pdTRUE)
-    {
-        return APP_VEHICLE_RESULT_FAIL;
-    }
-
-    if ((g_vehicleStatus.ac_fan_gear == expectedFan) &&
-        (g_vehicleStatus.ac_mode == expectedMode))
-    {
-        return APP_VEHICLE_RESULT_OK;
-    }
-
-    return APP_VEHICLE_RESULT_FAIL;
 }
 
 /**

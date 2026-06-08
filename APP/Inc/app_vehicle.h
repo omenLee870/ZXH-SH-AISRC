@@ -53,8 +53,6 @@ typedef enum
     APP_VEHICLE_CMD_AC_LEVEL1,           /* 空调一档。                 */
     APP_VEHICLE_CMD_AC_LEVEL2,           /* 空调二档。                 */
     APP_VEHICLE_CMD_AC_LEVEL3,           /* 空调三档。                 */
-
-    /* 以下不需 CAN 发送，直接返回 OK */
     APP_VEHICLE_CMD_WEATHER_QUERY,       /* 查询天气。                 */
     APP_VEHICLE_CMD_DATE_QUERY,          /* 查询日期。                 */
     APP_VEHICLE_CMD_TIME_QUERY,          /* 查询时间。                 */

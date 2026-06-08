@@ -251,3 +251,18 @@ void CAN_ParseBCM_TBOX2(const uint8_t *data)
             g_vehicleStatus.bcm_seat_sensor,
             g_vehicleStatus.bcm_light_sensor);
 }
+
+void CAN_ParseTBOX_DPLY(const uint8_t *data)
+{
+    g_vehicleStatus.tbox_wind_speed = data[1] & 0x0FU;
+    g_vehicleStatus.tbox_weather    = (data[1] >> 4) & 0x0FU;
+    g_vehicleStatus.tbox_temp_raw   = data[2];
+
+    g_vehicleStatus.tbox_year  = data[3];
+    g_vehicleStatus.tbox_month = data[4];
+    g_vehicleStatus.tbox_date  = data[5];
+    g_vehicleStatus.tbox_hour  = data[6];
+    g_vehicleStatus.tbox_min   = data[7];
+
+    g_vehicleStatus.tbox_dply_tick = xTaskGetTickCount();
+}

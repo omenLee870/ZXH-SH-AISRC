@@ -9,6 +9,7 @@
 #include "app_voice.h"
 #include "app_debug.h"
 #include "app_vehicle.h"
+#include "app_can_proto.h"
 
 #define LOG_TAG "voice"
 
@@ -135,6 +136,59 @@ static uint8_t App_VoiceMapRespCode(AppVehicleResult_t result)
 }
 
 /**
+ * @brief  处理需要携带数据返回的语音信息查询命令。
+ * @param  voiceCmd 语音模块原始命令码，例如天气/日期/时间查询。
+ */
+static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
+{
+    uint8_t data[5] = {0};
+    uint8_t valid = 0U;
+    int16_t temp;
+
+    if (voiceCmd == APP_VOICE_CMD_WEATHER_QUERY)
+    {
+        /*
+         * CAN 协议 TBOX_Temp 物理值 = 原始值 - 40；
+         * 语音协议负温度编码为 0x80 + 绝对值，例如 -40 度为 0xA8。
+         */
+        temp = (int16_t)g_vehicleStatus.tbox_temp_raw - 40;
+
+        data[0] = g_vehicleStatus.tbox_weather;
+        data[1] = (temp < 0) ? (0x80U + (uint8_t)(-temp)) : (uint8_t)temp;
+        data[2] = g_vehicleStatus.tbox_wind_speed;
+    }
+    else if (voiceCmd == APP_VOICE_CMD_DATE_QUERY)
+    {
+        /* 语音协议日期回复：年为 2000 年偏移值，月/日直接使用 TBOX_DPLY 缓存。 */
+        data[0] = g_vehicleStatus.tbox_year;
+        data[1] = g_vehicleStatus.tbox_month;
+        data[2] = g_vehicleStatus.tbox_date;
+    }
+    else
+    {
+        /*
+         * CAN 缓存为 24 小时制；语音协议拆成上午/下午 + 0~11 小时 + 分钟。
+         * 12:xx 及以后回复下午，小时字段按协议取 12 小时制余数。
+         */
+        data[0] = (g_vehicleStatus.tbox_hour >= 12U) ? 1U : 0U;
+        data[1] = g_vehicleStatus.tbox_hour % 12U;
+        data[2] = g_vehicleStatus.tbox_min;
+    }
+
+    /* 三个业务字节全为 0 时按无有效 TBOX 信息处理，避免播报默认空数据。 */
+    valid = (uint8_t)((data[0] != 0U) || (data[1] != 0U) || (data[2] != 0U));
+
+    if (valid != 0U)
+    {
+        Voice_SendFrame(voiceCmd, VOICE_RESP_OK, data);
+    }
+    else
+    {
+        Voice_SendFrame(voiceCmd, VOICE_RESP_FAIL, NULL);
+    }
+}
+
+/**
  * @brief  处理一帧语音识别命令。
  * @param  pFrame 语音 UART 层解析出的完整识别帧。
  * @note   流程：
@@ -167,6 +221,13 @@ void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
     result = App_ControlRequest(vehicleCmd, pdMS_TO_TICKS(500U));
 
     /******************** ③ 结果 → 应答 → 回复语音芯片 ********************/
-    respCode = App_VoiceMapRespCode(result);
-    Voice_SendFrame(pFrame->cmd, respCode, NULL);
+    if ((pFrame->cmd != APP_VOICE_CMD_WEATHER_QUERY) &&
+        (pFrame->cmd != APP_VOICE_CMD_DATE_QUERY) &&
+        (pFrame->cmd != APP_VOICE_CMD_TIME_QUERY))
+    {
+        respCode = App_VoiceMapRespCode(result);
+        Voice_SendFrame(pFrame->cmd, respCode, NULL);
+    }else{
+        App_VoiceReplyInfoQuery(pFrame->cmd);
+    }
 }

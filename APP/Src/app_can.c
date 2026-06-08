@@ -164,7 +164,8 @@ void APP_CAN_Init(void)
         CAN_ID_ACU_IVI,        /* ACU → IVI：空调风机、模式、故障状态反馈。 */
         CAN_ID_SRCM,           /* SRCM → IVI：天窗风扇、阅读灯状态反馈。 */
         CAN_ID_MCU_DPLY1,      /* MCU → 仪表/IVI：档位、车速、SOC、电压等反馈。 */
-        CAN_ID_BCM_TBOX2       /* BCM → 各节点：整车故障、传感器状态反馈。 */
+        CAN_ID_BCM_TBOX2,      /* BCM → 各节点：整车故障、传感器状态反馈。 */
+        CAN_ID_TBOX_DPLY,     /* TBOX -> IVI：天气、日期、时间等信息。 */
     };
 
     for (i = 0U; i < (sizeof(acceptIds) / sizeof(acceptIds[0])); i++)
@@ -389,6 +390,9 @@ void CAN_ProcessRxFrame(const CAN_RxFrame_t *frame)
 
         case CAN_ID_BCM_TBOX2:
             CAN_ParseBCM_TBOX2(frame->data);
+            break;
+        case CAN_ID_TBOX_DPLY:
+            CAN_ParseTBOX_DPLY(frame->data);
             break;
 
         default:
