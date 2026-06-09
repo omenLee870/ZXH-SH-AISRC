@@ -35,6 +35,9 @@
 #include "task.h"
 
 #define LOG_TAG "main"
+#ifndef ZXH_405AI_VERSION
+#define ZXH_405AI_VERSION "V1.0.0"
+#endif
 
 /* Private define ------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
