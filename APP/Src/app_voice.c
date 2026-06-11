@@ -176,7 +176,7 @@ static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
     }
 
     /* 三个业务字节全为 0 时按无有效 TBOX 信息处理，避免播报默认空数据。 */
-    valid = (uint8_t)((data[0] != 0U) || (data[1] != 0U) || (data[2] != 0U));
+    valid = (uint8_t)((data[0] != 0U) || ((data[1] != 0U) && (data[1] != 0xA8)) || (data[2] != 0U));
 
     if (valid != 0U)
     {
@@ -225,6 +225,8 @@ void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
         (pFrame->cmd != APP_VOICE_CMD_DATE_QUERY) &&
         (pFrame->cmd != APP_VOICE_CMD_TIME_QUERY))
     {
+
+        
         respCode = App_VoiceMapRespCode(result);
         Voice_SendFrame(pFrame->cmd, respCode, NULL);
     }else{
