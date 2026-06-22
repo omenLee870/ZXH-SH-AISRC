@@ -84,7 +84,7 @@ void App_VoiceInit(void);
  * @param  pFrame 语音 UART 层解析出的完整识别帧。
  * @retval 无。
  * @note   该函数由 App_VoiceTask 调用，根据命令码分发到车辆控制/CAN 控制层，
- *         并通过 Voice_SendFrame() 回传执行结果。
+ *         查询类命令直接通过 Voice_SendFrame() 回复，控制类命令交给车辆任务异步回复。
  */
 void App_VoiceProcessFrame(const VoiceFrame_t *pFrame);
 

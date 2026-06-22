@@ -5,13 +5,15 @@
  *          集中执行安全判断、CAN 发送、结果返回。
  *
  * 请求链路：
- *   上层 → App_ControlRequest() → 队列 → VehicleTask → 执行 → 任务通知 → 上层
+ *   同步请求：上层 → App_ControlRequest() → 队列 → VehicleTask → 执行 → 任务通知 → 上层
+ *   语音请求：语音 → App_ControlSubmit() → 队列 → VehicleTask → pending 表 → 语音回复
  */
 
 #include "app_vehicle.h"
 #include "app_debug.h"
 #include "queue.h"
 #include "app_can_proto.h"
+#include "voice_uart.h"
 #include <stddef.h>
 
 #define LOG_TAG "vehicle"
@@ -41,13 +43,29 @@ typedef struct
     uint8_t expected;                    /* 期望反馈值。 */
 } AppVehicleCmdMap_t;
 
-#define APP_VEHICLE_REQ_QUEUE_LENGTH        4U
+/**
+ * @brief  语音异步控制 pending 项。
+ */
+typedef struct
+{
+    uint8_t voiceCmd;                         /* 原始语音命令码，用于完成后回复语音模块。 */
+    uint8_t used;                             /* 1 = 本槽位正在等待反馈，0 = 空闲。 */
+    TickType_t startTick;                     /* 发送请求的系统 tick，用于 3s 超时判断。 */
+    uint32_t oldRxTick;                       /* 发送请求前对应反馈帧的时间戳，用于识别新回复。 */
+    const AppVehicleCmdMap_t *pMap;           /* 指向命令映射表项，提供反馈字段和期望值。 */
+} AppVehiclePending_t;
+
+#define APP_VEHICLE_REQ_QUEUE_LENGTH        32U
 #define APP_VEHICLE_REQ_SEND_TIMEOUT_MS     20U
 
 /** RX 反馈等待时间（ms），给 BCM/ACU/SRCM 至少一个周期的反应时间 */
 #define APP_VEHICLE_RX_WAIT_MS              150U
 
+#define APP_VEHICLE_PENDING_MAX             32U      /* 3s 窗口内允许等待反馈的语音控制命令数量。 */
+#define APP_VEHICLE_PENDING_TIMEOUT_MS      3000U    /* 单条语音控制命令等待车身状态达到目标的最长时间。 */
+
 static QueueHandle_t s_vehicleReqQueue = NULL;
+static AppVehiclePending_t s_vehiclePending[APP_VEHICLE_PENDING_MAX];
 
 static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
 {
@@ -116,6 +134,34 @@ static const AppVehicleCmdMap_t *App_VehicleFindCmdMap(AppVehicleCommand_t cmd)
 }
 
 /**
+ * @brief  判断命令是否不需要等待车身 CAN 反馈。
+ * @param  cmd 内部统一车辆控制命令。
+ * @return 1 = 可立即回复成功, 0 = 需要按映射表发送 CAN 并等待反馈。
+ */
+static uint8_t App_VehicleIsImmediateOkCmd(AppVehicleCommand_t cmd)
+{
+    switch (cmd)
+    {
+        case APP_VEHICLE_CMD_WAKEUP:
+        case APP_VEHICLE_CMD_WAKE_WORD:
+        case APP_VEHICLE_CMD_WEATHER_QUERY:
+        case APP_VEHICLE_CMD_DATE_QUERY:
+        case APP_VEHICLE_CMD_TIME_QUERY:
+        case APP_VEHICLE_CMD_VOLUME_UP:
+        case APP_VEHICLE_CMD_VOLUME_DOWN:
+        case APP_VEHICLE_CMD_VOLUME_MAX:
+        case APP_VEHICLE_CMD_VOLUME_MIN:
+        case APP_VEHICLE_CMD_DATA_WAKEUP:
+        case APP_VEHICLE_CMD_DATA_EXIT_WAKEUP:
+        case APP_VEHICLE_CMD_15S_EXIT_WAKEUP:
+            return 1U;
+
+        default:
+            return 0U;
+    }
+}
+
+/**
  * @brief  从车辆状态结构体中读取一个 uint8_t 状态字段。
  */
 static uint8_t App_VehicleReadStatusU8(uint16_t offset)
@@ -123,6 +169,169 @@ static uint8_t App_VehicleReadStatusU8(uint16_t offset)
     const uint8_t *pBase = (const uint8_t *)&g_vehicleStatus;
 
     return *(const uint8_t *)(pBase + offset);
+}
+
+/**
+ * @brief  将车辆执行结果映射为语音应答码。
+ * @param  result 车辆控制结果。
+ * @return 语音协议应答码。
+ */
+static uint8_t App_VehicleVoiceRespCode(AppVehicleResult_t result)
+{
+    if (result == APP_VEHICLE_RESULT_OK)
+    {
+        return VOICE_RESP_OK;
+    }
+    else if (result == APP_VEHICLE_RESULT_SAFETY)
+    {
+        return VOICE_RESP_SAFETY;
+    }
+    else
+    {
+        return VOICE_RESP_FAIL;
+    }
+}
+
+/**
+ * @brief  获取映射表对应反馈报文的最近更新时间戳。
+ * @param  pMap 命令映射表项。
+ * @return 反馈报文更新时间戳；映射无效时返回 0。
+ */
+static uint32_t App_VehicleGetRxTickByMap(const AppVehicleCmdMap_t *pMap)
+{
+    if (pMap == NULL)
+    {
+        return 0U;
+    }
+
+    if (pMap->target == APP_VEHICLE_CAN_TARGET_BCM)
+    {
+        return g_vehicleStatus.bcm_tbox1_tick;
+    }
+    else if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        return g_vehicleStatus.acu_ivi_tick;
+    }
+    else
+    {
+        return g_vehicleStatus.srcm_tick;
+    }
+}
+
+/**
+ * @brief  发送映射表描述的 CAN 请求帧。
+ * @param  pMap 命令映射表项。
+ * @return 0 = 发送成功, 其他 = 发送失败。
+ */
+static int App_VehicleSendRequestByMap(const AppVehicleCmdMap_t *pMap)
+{
+    uint8_t data[8] = {0};
+
+    if (pMap == NULL)
+    {
+        return -1;
+    }
+
+    data[pMap->txByte] = pMap->txValue;
+
+    if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        return APP_CAN_SendIVI_ACU(data);
+    }
+    else
+    {
+        return APP_CAN_SendIVI_BCM(data);
+    }
+}
+
+/**
+ * @brief  向指定 CAN 控制通道发送全 0x00 无请求帧。
+ * @param  target CAN 控制目标。
+ * @retval 无。
+ * @note   协议中 Signal Value Description = 0x00 表示无请求；
+ *         pending 指令完成或超时后发送该帧，释放 IVI 对车身控制器的请求。
+ */
+static void App_VehicleSendNoRequest(AppVehicleCanTarget_t target)
+{
+    uint8_t data[8] = {0};
+
+    if (target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        (void)APP_CAN_SendIVI_ACU(data);
+    }
+    else
+    {
+        (void)APP_CAN_SendIVI_BCM(data);
+    }
+}
+
+/**
+ * @brief  判断指定 CAN 目标是否还有 pending 指令。
+ * @param  target CAN 控制目标。
+ * @return 1 = 仍有 pending, 0 = 没有 pending。
+ */
+static uint8_t App_VehicleHasPendingTarget(AppVehicleCanTarget_t target)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_VEHICLE_PENDING_MAX; i++)
+    {
+        if ((s_vehiclePending[i].used != 0U) &&
+            (s_vehiclePending[i].pMap != NULL) &&
+            (s_vehiclePending[i].pMap->target == target))
+        {
+            return 1U;
+        }
+    }
+
+    return 0U;
+}
+
+/**
+ * @brief  查找空闲 pending 槽位。
+ * @return 空闲槽位指针；无空闲槽位时返回 NULL。
+ */
+static AppVehiclePending_t *App_VehicleFindFreePending(void)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_VEHICLE_PENDING_MAX; i++)
+    {
+        if (s_vehiclePending[i].used == 0U)
+        {
+            return &s_vehiclePending[i];
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * @brief  回复语音模块并清理 pending 槽位。
+ * @param  pPending pending 槽位。
+ * @param  result   本条命令的执行结果。
+ * @retval 无。
+ */
+static void App_VehicleFinishPending(AppVehiclePending_t *pPending,
+                                     AppVehicleResult_t result)
+{
+    AppVehicleCanTarget_t target;
+
+    if ((pPending == NULL) || (pPending->used == 0U) || (pPending->pMap == NULL))
+    {
+        return;
+    }
+
+    target = pPending->pMap->target;
+    Voice_SendFrame(pPending->voiceCmd, App_VehicleVoiceRespCode(result), NULL);
+
+    pPending->used = 0U;
+    pPending->pMap = NULL;
+
+    if (App_VehicleHasPendingTarget(target) == 0U)
+    {
+        App_VehicleSendNoRequest(target);
+    }
 }
 
 /**
@@ -165,7 +374,6 @@ static BaseType_t App_VehicleWaitRxUpdate(const uint32_t *pRxTick,
  */
 static AppVehicleResult_t App_VehicleExecuteByMap(const AppVehicleCmdMap_t *pMap)
 {
-    uint8_t data[8] = {0};
     uint32_t oldTick;
     const uint32_t *pRxTick;
     int sendRet;
@@ -175,26 +383,23 @@ static AppVehicleResult_t App_VehicleExecuteByMap(const AppVehicleCmdMap_t *pMap
         return APP_VEHICLE_RESULT_FAIL;
     }
 
-    data[pMap->txByte] = pMap->txValue;
-
     if (pMap->target == APP_VEHICLE_CAN_TARGET_BCM)
     {
         pRxTick = &g_vehicleStatus.bcm_tbox1_tick;
         oldTick = g_vehicleStatus.bcm_tbox1_tick;
-        sendRet = APP_CAN_SendIVI_BCM(data);
     }
     else if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
     {
         pRxTick = &g_vehicleStatus.acu_ivi_tick;
         oldTick = g_vehicleStatus.acu_ivi_tick;
-        sendRet = APP_CAN_SendIVI_ACU(data);
     }
     else
     {
         pRxTick = &g_vehicleStatus.srcm_tick;
         oldTick = g_vehicleStatus.srcm_tick;
-        sendRet = APP_CAN_SendIVI_BCM(data);
     }
+
+    sendRet = App_VehicleSendRequestByMap(pMap);
 
     if (sendRet != 0)
     {
@@ -247,32 +452,19 @@ AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 {
     const AppVehicleCmdMap_t *pMap;      /* 命令映射表项。 */
 
-    switch (cmd)
+    if (App_VehicleIsImmediateOkCmd(cmd) != 0U)
     {
-        case APP_VEHICLE_CMD_WAKEUP:
-        case APP_VEHICLE_CMD_WAKE_WORD:
-        case APP_VEHICLE_CMD_WEATHER_QUERY:
-        case APP_VEHICLE_CMD_DATE_QUERY:
-        case APP_VEHICLE_CMD_TIME_QUERY:
-        case APP_VEHICLE_CMD_VOLUME_UP:
-        case APP_VEHICLE_CMD_VOLUME_DOWN:
-        case APP_VEHICLE_CMD_VOLUME_MAX:
-        case APP_VEHICLE_CMD_VOLUME_MIN:
-        case APP_VEHICLE_CMD_DATA_WAKEUP:
-        case APP_VEHICLE_CMD_DATA_EXIT_WAKEUP:
-        case APP_VEHICLE_CMD_15S_EXIT_WAKEUP:
-            return APP_VEHICLE_RESULT_OK;
-
-        default:
-            pMap = App_VehicleFindCmdMap(cmd);
-            if (pMap == NULL)
-            {
-                LOG_WARN("Unknown vehicle cmd: %d", cmd);
-                return APP_VEHICLE_RESULT_FAIL;
-            }
-
-            return App_VehicleExecuteByMap(pMap);
+        return APP_VEHICLE_RESULT_OK;
     }
+
+    pMap = App_VehicleFindCmdMap(cmd);
+    if (pMap == NULL)
+    {
+        LOG_WARN("Unknown vehicle cmd: %d", cmd);
+        return APP_VEHICLE_RESULT_FAIL;
+    }
+
+    return App_VehicleExecuteByMap(pMap);
 }
 
 /**
@@ -313,6 +505,7 @@ AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
 
     req.cmd       = cmd;
     req.requester = xTaskGetCurrentTaskHandle();
+    req.voiceCmd  = 0U;
 
     /** @brief  发送请求到 VehicleTask。 */
     if (xQueueSend(s_vehicleReqQueue,
@@ -334,4 +527,130 @@ AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
     }
 
     return (AppVehicleResult_t)notifyValue;
+}
+
+/**
+ * @brief  提交语音异步控制请求。
+ * @param  cmd      内部统一车辆控制命令。
+ * @param  voiceCmd 语音模块原始命令码。
+ * @return OK = 请求已入队或已直接处理, 其他 = 请求提交失败。
+ */
+AppVehicleResult_t App_ControlSubmit(AppVehicleCommand_t cmd,
+                                     uint8_t voiceCmd)
+{
+    AppVehicleRequest_t req;
+
+    if (s_vehicleReqQueue == NULL)
+    {
+        return APP_VEHICLE_RESULT_NOT_READY;
+    }
+
+    req.cmd       = cmd;
+    req.requester = NULL;
+    req.voiceCmd  = voiceCmd;
+
+    if (xQueueSend(s_vehicleReqQueue,
+                   &req,
+                   pdMS_TO_TICKS(APP_VEHICLE_REQ_SEND_TIMEOUT_MS)) != pdPASS)
+    {
+        LOG_WARN("Vehicle async req queue full, cmd: %d", cmd);
+        return APP_VEHICLE_RESULT_TIMEOUT;
+    }
+
+    return APP_VEHICLE_RESULT_OK;
+}
+
+/**
+ * @brief  VehicleTask 处理一条车辆请求。
+ * @param  pReq 队列收到的车辆请求。
+ * @retval 无。
+ */
+void App_VehicleProcessRequest(const AppVehicleRequest_t *pReq)
+{
+    AppVehicleResult_t result;
+    AppVehiclePending_t *pPending;
+    const AppVehicleCmdMap_t *pMap;
+
+    if (pReq == NULL)
+    {
+        return;
+    }
+
+    if (pReq->requester != NULL)
+    {
+        result = App_VehicleExecute(pReq->cmd);
+        xTaskNotify(pReq->requester, (uint32_t)result, eSetValueWithOverwrite);
+        return;
+    }
+
+    if (App_VehicleIsImmediateOkCmd(pReq->cmd) != 0U)
+    {
+        Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_OK, NULL);
+        return;
+    }
+
+    pMap = App_VehicleFindCmdMap(pReq->cmd);
+    if (pMap == NULL)
+    {
+        LOG_WARN("Unknown async vehicle cmd: %d", pReq->cmd);
+        Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
+        return;
+    }
+
+    pPending = App_VehicleFindFreePending();
+    if (pPending == NULL)
+    {
+        LOG_WARN("Vehicle pending table full, cmd: %d", pReq->cmd);
+        Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
+        return;
+    }
+
+    pPending->oldRxTick = App_VehicleGetRxTickByMap(pMap);
+
+    if (App_VehicleSendRequestByMap(pMap) != 0)
+    {
+        Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
+        return;
+    }
+
+    pPending->voiceCmd   = pReq->voiceCmd;
+    pPending->startTick  = xTaskGetTickCount();
+    pPending->pMap       = pMap;
+    pPending->used       = 1U;
+}
+
+/**
+ * @brief  VehicleTask 周期轮询语音 pending 表。
+ * @retval 无。
+ */
+void App_VehiclePollPending(void)
+{
+    uint8_t i;
+    TickType_t nowTick;
+    const AppVehicleCmdMap_t *pMap;
+
+    nowTick = xTaskGetTickCount();
+
+    for (i = 0U; i < APP_VEHICLE_PENDING_MAX; i++)
+    {
+        if ((s_vehiclePending[i].used == 0U) || (s_vehiclePending[i].pMap == NULL))
+        {
+            continue;
+        }
+
+        pMap = s_vehiclePending[i].pMap;
+
+        if ((App_VehicleGetRxTickByMap(pMap) != s_vehiclePending[i].oldRxTick) &&
+            (App_VehicleReadStatusU8(pMap->statusOffset) == pMap->expected))
+        {
+            App_VehicleFinishPending(&s_vehiclePending[i], APP_VEHICLE_RESULT_OK);
+        }
+        else if ((nowTick - s_vehiclePending[i].startTick) >=
+                 pdMS_TO_TICKS(APP_VEHICLE_PENDING_TIMEOUT_MS))
+        {
+            LOG_WARN("Vehicle pending timeout, voice cmd: 0x%02X",
+                     s_vehiclePending[i].voiceCmd);
+            App_VehicleFinishPending(&s_vehiclePending[i], APP_VEHICLE_RESULT_TIMEOUT);
+        }
+    }
 }

@@ -206,12 +206,14 @@ static void App_VoiceTask(void *pvParameters)
 /**
  * @brief  车辆控制任务。
  * @param  pvParameters 未使用。
- * @note   阻塞等待请求 → 执行 → 任务通知回结果 → 循环。
+ * @note   周期接收车辆请求并轮询语音 pending 表：
+ *         1. 收到同步请求时立即执行并通知请求任务；
+ *         2. 收到语音异步请求时交给车辆模块入 pending 表；
+ *         3. 每 10ms 检查 pending 是否收到车身反馈或超过 3s。
  */
 void App_VehicleTask(void *pvParameters)
 {
     AppVehicleRequest_t req;
-    AppVehicleResult_t  result;
 
     (void)pvParameters;
 
@@ -219,19 +221,13 @@ void App_VehicleTask(void *pvParameters)
 
     while (1)
     {
-        /** @brief  阻塞等请求，无请求时 CPU 让给其他任务。 */
-        if (xQueueReceive(Vehicle_GetRxQueue(), &req, portMAX_DELAY) == pdPASS)
+        /** @brief  短等待收新请求，避免没有新命令时 pending 超时检查被永久阻塞。 */
+        if (xQueueReceive(Vehicle_GetRxQueue(), &req, pdMS_TO_TICKS(10U)) == pdPASS)
         {
-            result = App_VehicleExecute(req.cmd);
-
-            /** @brief  通过任务通知，把结果定向发给请求方。 */
-            if (req.requester != NULL)
-            {
-                xTaskNotify(req.requester,
-                            (uint32_t)result,
-                            eSetValueWithOverwrite);
-            }
+            App_VehicleProcessRequest(&req);
         }
+
+        App_VehiclePollPending();
     }
 }
 

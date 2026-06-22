@@ -1,9 +1,9 @@
 /**
  * @file    app_vehicle.h
  * @brief   车辆控制模块
- * @details 提供统一的控制请求入口 App_ControlRequest()。
- *          语音、按键、BLE 等任何上层任务都通过此接口发起车辆控制。
- *          内部通过 FreeRTOS 队列 + 任务通知实现同步等待。
+ * @details 提供同步控制请求和语音异步控制请求入口。
+ *          语音控制命令进入 VehicleTask 后由 pending 表等待车身反馈，
+ *          避免语音任务在 3s 反馈窗口内阻塞。
  */
 
 #ifndef __APP_VEHICLE_H__
@@ -82,6 +82,7 @@ typedef struct
 {
     AppVehicleCommand_t cmd;            /* 要执行的命令。             */
     TaskHandle_t        requester;      /* 发起请求的任务句柄。       */
+    uint8_t             voiceCmd;       /* 原始语音命令码，异步回复语音模块时使用。 */
 } AppVehicleRequest_t;
 
 /* ===== 函数声明 ===== */
@@ -98,6 +99,31 @@ QueueHandle_t Vehicle_GetRxQueue(void);
  */
 AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
                                       TickType_t timeoutTicks);
+
+/**
+ * @brief  提交语音异步控制请求。
+ * @param  cmd      内部统一车辆控制命令。
+ * @param  voiceCmd 语音模块原始命令码，用于控制完成或超时后回复语音模块。
+ * @return OK = 请求已入队或已直接处理, 其他 = 请求提交失败。
+ * @note   该接口只负责把命令交给 VehicleTask，不等待车身反馈。
+ */
+AppVehicleResult_t App_ControlSubmit(AppVehicleCommand_t cmd,
+                                     uint8_t voiceCmd);
+
+/**
+ * @brief  VehicleTask 处理一条车辆请求。
+ * @param  pReq 队列收到的车辆请求。
+ * @retval 无。
+ * @note   同步请求仍按旧逻辑执行并通知 requester；语音异步请求进入 pending 表。
+ */
+void App_VehicleProcessRequest(const AppVehicleRequest_t *pReq);
+
+/**
+ * @brief  VehicleTask 周期轮询 pending 表。
+ * @retval 无。
+ * @note   用于检查车身状态是否达到目标，以及 pending 指令是否超过 3s。
+ */
+void App_VehiclePollPending(void);
 
 /**
  * @brief  执行车辆控制命令。

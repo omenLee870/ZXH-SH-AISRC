@@ -115,27 +115,6 @@ static uint8_t App_VoiceCmdMap(uint8_t voiceCmd, AppVehicleCommand_t *pOut)
 }
 
 /**
- * @brief  控制结果 → 协议应答码映射。
- * @param  result  VehicleTask 返回的执行结果。
- * @return 协议应答码（VOICE_RESP_OK / FAIL / SAFETY）。
- */
-static uint8_t App_VoiceMapRespCode(AppVehicleResult_t result)
-{
-    if (result == APP_VEHICLE_RESULT_OK)
-    {
-        return VOICE_RESP_OK;
-    }
-    else if (result == APP_VEHICLE_RESULT_SAFETY)
-    {
-        return VOICE_RESP_SAFETY;
-    }
-    else
-    {
-        return VOICE_RESP_FAIL;
-    }
-}
-
-/**
  * @brief  处理需要携带数据返回的语音信息查询命令。
  * @param  voiceCmd 语音模块原始命令码，例如天气/日期/时间查询。
  */
@@ -193,14 +172,13 @@ static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
  * @param  pFrame 语音 UART 层解析出的完整识别帧。
  * @note   流程：
  *         1. 查表：语音命令码 → 内部统一控制命令
- *         2. 委托 VehicleTask 执行（同步等待，最多 500ms）
- *         3. 结果 → 应答码 → 回复语音芯片
+ *         2. 信息查询类命令立即从缓存回复
+ *         3. 控制类命令提交给 VehicleTask，由 pending 表等待车身反馈后异步回复
  */
 void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
 {
     AppVehicleCommand_t vehicleCmd;
-    AppVehicleResult_t  result;
-    uint8_t             respCode;
+    AppVehicleResult_t  submitResult;
 
     if (pFrame == NULL)
     {
@@ -217,19 +195,19 @@ void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
         return;
     }
 
-    /******************** ② 委托 VehicleTask 执行（最多等 500ms） ********************/
-    result = App_ControlRequest(vehicleCmd, pdMS_TO_TICKS(500U));
-
-    /******************** ③ 结果 → 应答 → 回复语音芯片 ********************/
-    if ((pFrame->cmd != APP_VOICE_CMD_WEATHER_QUERY) &&
-        (pFrame->cmd != APP_VOICE_CMD_DATE_QUERY) &&
-        (pFrame->cmd != APP_VOICE_CMD_TIME_QUERY))
+    /******************** ② 查询类命令直接回复缓存信息 ********************/
+    if ((pFrame->cmd == APP_VOICE_CMD_WEATHER_QUERY) ||
+        (pFrame->cmd == APP_VOICE_CMD_DATE_QUERY) ||
+        (pFrame->cmd == APP_VOICE_CMD_TIME_QUERY))
     {
-
-        
-        respCode = App_VoiceMapRespCode(result);
-        Voice_SendFrame(pFrame->cmd, respCode, NULL);
-    }else{
         App_VoiceReplyInfoQuery(pFrame->cmd);
+        return;
+    }
+
+    /******************** ③ 控制类命令异步提交，后续由 VehicleTask 回复语音模块 ********************/
+    submitResult = App_ControlSubmit(vehicleCmd, pFrame->cmd);
+    if (submitResult != APP_VEHICLE_RESULT_OK)
+    {
+        Voice_SendFrame(pFrame->cmd, VOICE_RESP_FAIL, NULL);
     }
 }
