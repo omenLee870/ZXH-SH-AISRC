@@ -48,12 +48,23 @@ typedef struct
  */
 typedef struct
 {
-    uint8_t voiceCmd;                         /* 原始语音命令码，用于完成后回复语音模块。 */
     uint8_t used;                             /* 1 = 本槽位正在等待反馈，0 = 空闲。 */
+    uint8_t groupIndex;                       /* 所属语音命令组，用于多个子控制统一回复。 */
     TickType_t startTick;                     /* 发送请求的系统 tick，用于 3s 超时判断。 */
     uint32_t oldRxTick;                       /* 发送请求前对应反馈帧的时间戳，用于识别新回复。 */
     const AppVehicleCmdMap_t *pMap;           /* 指向命令映射表项，提供反馈字段和期望值。 */
 } AppVehiclePending_t;
+
+/**
+ * @brief  语音命令组状态。
+ */
+typedef struct
+{
+    uint8_t used;                             /* 1 = 本组正在等待至少一个子控制完成。 */
+    uint8_t voiceCmd;                         /* 原始语音命令码，整组完成后只回复一次。 */
+    uint8_t pendingCount;                     /* 本组仍在等待反馈的子控制数量。 */
+    AppVehicleResult_t result;                /* 本组累计结果，任一子控制失败则整组失败。 */
+} AppVehicleGroup_t;
 
 #define APP_VEHICLE_REQ_QUEUE_LENGTH        32U
 #define APP_VEHICLE_REQ_SEND_TIMEOUT_MS     20U
@@ -62,10 +73,14 @@ typedef struct
 #define APP_VEHICLE_RX_WAIT_MS              150U
 
 #define APP_VEHICLE_PENDING_MAX             32U      /* 3s 窗口内允许等待反馈的语音控制命令数量。 */
+#define APP_VEHICLE_GROUP_MAX               16U      /* 允许同时等待回复的语音命令组数量。 */
 #define APP_VEHICLE_PENDING_TIMEOUT_MS      3000U    /* 单条语音控制命令等待车身状态达到目标的最长时间。 */
+#define APP_VEHICLE_LINK_CMD_MAX            2U       /* 单条语音命令最多展开为 2 条车辆控制子命令。 */
+#define APP_VEHICLE_LINK_SEND_GAP_MS        10U      /* 联动子命令之间的发送间隔，避免 PTB 仍忙时后一帧抢占前一帧。 */
 
 static QueueHandle_t s_vehicleReqQueue = NULL;
 static AppVehiclePending_t s_vehiclePending[APP_VEHICLE_PENDING_MAX];
+static AppVehicleGroup_t s_vehicleGroup[APP_VEHICLE_GROUP_MAX];
 
 static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
 {
@@ -98,7 +113,7 @@ static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
     { APP_VEHICLE_CMD_READING_LIGHT_ON,  APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_ON, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),        1U },
     { APP_VEHICLE_CMD_READING_LIGHT_OFF, APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_OFF, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),       0U },
 
-    { APP_VEHICLE_CMD_SUNROOF_FAN_ON,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_ON,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_OFF,   APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_OFF, CAN_BCM_SUNROOF_FAN_POS),    offsetof(VehicleStatus_t, sr_fan_level),             0U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_L1,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_L2,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
@@ -107,6 +122,7 @@ static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
     { APP_VEHICLE_CMD_AC_HEAT_ON,        APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_HEAT,                                              offsetof(VehicleStatus_t, ac_mode),                  1U },
     { APP_VEHICLE_CMD_AC_COOL_ON,        APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_COOL,                                              offsetof(VehicleStatus_t, ac_mode),                  2U },
     { APP_VEHICLE_CMD_AC_OFF,            APP_VEHICLE_CAN_TARGET_ACU,  1U, CAN_ACU_MODE_OFF,                                               offsetof(VehicleStatus_t, ac_mode),                  0U },
+    { APP_VEHICLE_CMD_AC_FAN_OFF,        APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_OFF,                                                offsetof(VehicleStatus_t, ac_fan_gear),              0U },
     { APP_VEHICLE_CMD_AC_LEVEL1,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL1,                                             offsetof(VehicleStatus_t, ac_fan_gear),              1U },
     { APP_VEHICLE_CMD_AC_LEVEL2,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL2,                                             offsetof(VehicleStatus_t, ac_fan_gear),              2U },
     { APP_VEHICLE_CMD_AC_LEVEL3,         APP_VEHICLE_CAN_TARGET_ACU,  0U, CAN_ACU_FAN_LEVEL3,                                             offsetof(VehicleStatus_t, ac_fan_gear),              3U }
@@ -131,6 +147,77 @@ static const AppVehicleCmdMap_t *App_VehicleFindCmdMap(AppVehicleCommand_t cmd)
     }
 
     return NULL;
+}
+
+/**
+ * @brief  判断车辆命令是否被当前车身状态禁止。
+ * @param  cmd 内部统一车辆控制命令。
+ * @return 安全检查结果。
+ * @note   车速大于 0km/h 时禁止关闭大灯，避免行驶中误关照明。
+ */
+static AppVehicleResult_t App_VehicleCheckSafety(AppVehicleCommand_t cmd)
+{
+    if ((cmd == APP_VEHICLE_CMD_LOW_BEAM_OFF) && (g_vehicleStatus.mcu_speed > 0U))
+    {
+        LOG_WARN("Reject low beam off while speed=%d", g_vehicleStatus.mcu_speed);
+        return APP_VEHICLE_RESULT_SAFETY;
+    }
+
+    return APP_VEHICLE_RESULT_OK;
+}
+
+/**
+ * @brief  将一条语音车辆命令展开为实际需要执行的子控制命令。
+ * @param  cmd  原始内部车辆控制命令。
+ * @param  list 输出子控制命令数组。
+ * @param  max  输出数组容量。
+ * @return 实际写入的子控制命令数量。
+ * @note   用于处理联动语义：
+ *         - 关闭大灯联动关闭远光灯；
+ *         - 打开雨刮喷水联动低速雨刮；
+ *         - 空调制热/制冷联动 2 挡风速；
+ *         - 关闭空调联动关闭空调风机。
+ */
+static uint8_t App_VehicleBuildLinkedCmdList(AppVehicleCommand_t cmd,
+                                             AppVehicleCommand_t *list,
+                                             uint8_t max)
+{
+    if ((list == NULL) || (max < APP_VEHICLE_LINK_CMD_MAX))
+    {
+        return 0U;
+    }
+
+    switch (cmd)
+    {
+        case APP_VEHICLE_CMD_LOW_BEAM_OFF:
+            list[0] = APP_VEHICLE_CMD_LOW_BEAM_OFF;
+            list[1] = APP_VEHICLE_CMD_HIGH_BEAM_OFF;
+            return 2U;
+
+        case APP_VEHICLE_CMD_WASHER_ON:
+            list[0] = APP_VEHICLE_CMD_WASHER_ON;
+            list[1] = APP_VEHICLE_CMD_WIPER_ON;
+            return 2U;
+
+        case APP_VEHICLE_CMD_AC_HEAT_ON:
+            list[0] = APP_VEHICLE_CMD_AC_HEAT_ON;
+            list[1] = APP_VEHICLE_CMD_AC_LEVEL2;
+            return 2U;
+
+        case APP_VEHICLE_CMD_AC_COOL_ON:
+            list[0] = APP_VEHICLE_CMD_AC_COOL_ON;
+            list[1] = APP_VEHICLE_CMD_AC_LEVEL2;
+            return 2U;
+
+        case APP_VEHICLE_CMD_AC_OFF:
+            list[0] = APP_VEHICLE_CMD_AC_OFF;
+            list[1] = APP_VEHICLE_CMD_AC_FAN_OFF;
+            return 2U;
+
+        default:
+            list[0] = cmd;
+            return 1U;
+    }
 }
 
 /**
@@ -307,6 +394,77 @@ static AppVehiclePending_t *App_VehicleFindFreePending(void)
 }
 
 /**
+ * @brief  查找空闲语音命令组槽位。
+ * @return 空闲命令组下标；无空闲时返回 0xFF。
+ */
+static uint8_t App_VehicleFindFreeGroup(void)
+{
+    uint8_t i;
+
+    for (i = 0U; i < APP_VEHICLE_GROUP_MAX; i++)
+    {
+        if (s_vehicleGroup[i].used == 0U)
+        {
+            return i;
+        }
+    }
+
+    return 0xFFU;
+}
+
+/**
+ * @brief  结束一个语音命令组并回复语音模块。
+ * @param  groupIndex 命令组下标。
+ * @retval 无。
+ */
+static void App_VehicleFinishGroup(uint8_t groupIndex)
+{
+    if ((groupIndex >= APP_VEHICLE_GROUP_MAX) || (s_vehicleGroup[groupIndex].used == 0U))
+    {
+        return;
+    }
+
+    Voice_SendFrame(s_vehicleGroup[groupIndex].voiceCmd,
+                    App_VehicleVoiceRespCode(s_vehicleGroup[groupIndex].result),
+                    NULL);
+
+    s_vehicleGroup[groupIndex].used = 0U;
+    s_vehicleGroup[groupIndex].pendingCount = 0U;
+    s_vehicleGroup[groupIndex].result = APP_VEHICLE_RESULT_OK;
+}
+
+/**
+ * @brief  把子控制结果合入语音命令组。
+ * @param  groupIndex 命令组下标。
+ * @param  result     子控制执行结果。
+ * @retval 无。
+ */
+static void App_VehicleUpdateGroupResult(uint8_t groupIndex,
+                                         AppVehicleResult_t result)
+{
+    if ((groupIndex >= APP_VEHICLE_GROUP_MAX) || (s_vehicleGroup[groupIndex].used == 0U))
+    {
+        return;
+    }
+
+    if ((result == APP_VEHICLE_RESULT_SAFETY) ||
+        ((result != APP_VEHICLE_RESULT_OK) && (s_vehicleGroup[groupIndex].result == APP_VEHICLE_RESULT_OK)))
+    {
+        s_vehicleGroup[groupIndex].result = result;
+    }
+
+    if (s_vehicleGroup[groupIndex].pendingCount > 0U)
+    {
+        s_vehicleGroup[groupIndex].pendingCount--;
+    }
+
+    if (s_vehicleGroup[groupIndex].pendingCount == 0U)
+    {
+        App_VehicleFinishGroup(groupIndex);
+    }
+}
+
+/**
  * @brief  回复语音模块并清理 pending 槽位。
  * @param  pPending pending 槽位。
  * @param  result   本条命令的执行结果。
@@ -316,6 +474,7 @@ static void App_VehicleFinishPending(AppVehiclePending_t *pPending,
                                      AppVehicleResult_t result)
 {
     AppVehicleCanTarget_t target;
+    uint8_t groupIndex;
 
     if ((pPending == NULL) || (pPending->used == 0U) || (pPending->pMap == NULL))
     {
@@ -323,7 +482,7 @@ static void App_VehicleFinishPending(AppVehiclePending_t *pPending,
     }
 
     target = pPending->pMap->target;
-    Voice_SendFrame(pPending->voiceCmd, App_VehicleVoiceRespCode(result), NULL);
+    groupIndex = pPending->groupIndex;
 
     pPending->used = 0U;
     pPending->pMap = NULL;
@@ -332,6 +491,8 @@ static void App_VehicleFinishPending(AppVehiclePending_t *pPending,
     {
         App_VehicleSendNoRequest(target);
     }
+
+    App_VehicleUpdateGroupResult(groupIndex, result);
 }
 
 /**
@@ -451,6 +612,13 @@ BaseType_t App_VehicleInit(void)
 AppVehicleResult_t App_VehicleExecute(AppVehicleCommand_t cmd)
 {
     const AppVehicleCmdMap_t *pMap;      /* 命令映射表项。 */
+    AppVehicleResult_t safetyResult;     /* 当前车身状态下的安全检查结果。 */
+
+    safetyResult = App_VehicleCheckSafety(cmd);
+    if (safetyResult != APP_VEHICLE_RESULT_OK)
+    {
+        return safetyResult;
+    }
 
     if (App_VehicleIsImmediateOkCmd(cmd) != 0U)
     {
@@ -570,6 +738,10 @@ void App_VehicleProcessRequest(const AppVehicleRequest_t *pReq)
     AppVehicleResult_t result;
     AppVehiclePending_t *pPending;
     const AppVehicleCmdMap_t *pMap;
+    AppVehicleCommand_t cmdList[APP_VEHICLE_LINK_CMD_MAX];
+    uint8_t cmdCount;
+    uint8_t groupIndex;
+    uint8_t i;
 
     if (pReq == NULL)
     {
@@ -583,40 +755,82 @@ void App_VehicleProcessRequest(const AppVehicleRequest_t *pReq)
         return;
     }
 
+    result = App_VehicleCheckSafety(pReq->cmd);
+    if (result != APP_VEHICLE_RESULT_OK)
+    {
+        Voice_SendFrame(pReq->voiceCmd, App_VehicleVoiceRespCode(result), NULL);
+        return;
+    }
+
     if (App_VehicleIsImmediateOkCmd(pReq->cmd) != 0U)
     {
         Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_OK, NULL);
         return;
     }
 
-    pMap = App_VehicleFindCmdMap(pReq->cmd);
-    if (pMap == NULL)
+    cmdCount = App_VehicleBuildLinkedCmdList(pReq->cmd, cmdList, APP_VEHICLE_LINK_CMD_MAX);
+    if (cmdCount == 0U)
     {
         LOG_WARN("Unknown async vehicle cmd: %d", pReq->cmd);
         Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
         return;
     }
 
-    pPending = App_VehicleFindFreePending();
-    if (pPending == NULL)
+    groupIndex = App_VehicleFindFreeGroup();
+    if (groupIndex >= APP_VEHICLE_GROUP_MAX)
     {
-        LOG_WARN("Vehicle pending table full, cmd: %d", pReq->cmd);
+        LOG_WARN("Vehicle group table full, cmd: %d", pReq->cmd);
         Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
         return;
     }
 
-    pPending->oldRxTick = App_VehicleGetRxTickByMap(pMap);
+    s_vehicleGroup[groupIndex].used = 1U;
+    s_vehicleGroup[groupIndex].voiceCmd = pReq->voiceCmd;
+    s_vehicleGroup[groupIndex].pendingCount = 0U;
+    s_vehicleGroup[groupIndex].result = APP_VEHICLE_RESULT_OK;
 
-    if (App_VehicleSendRequestByMap(pMap) != 0)
+    for (i = 0U; i < cmdCount; i++)
     {
-        Voice_SendFrame(pReq->voiceCmd, VOICE_RESP_FAIL, NULL);
-        return;
+        pMap = App_VehicleFindCmdMap(cmdList[i]);
+        if (pMap == NULL)
+        {
+            LOG_WARN("Unknown linked vehicle cmd: %d", cmdList[i]);
+            s_vehicleGroup[groupIndex].result = APP_VEHICLE_RESULT_FAIL;
+            continue;
+        }
+
+        pPending = App_VehicleFindFreePending();
+        if (pPending == NULL)
+        {
+            LOG_WARN("Vehicle pending table full, cmd: %d", cmdList[i]);
+            s_vehicleGroup[groupIndex].result = APP_VEHICLE_RESULT_FAIL;
+            continue;
+        }
+
+        pPending->oldRxTick = App_VehicleGetRxTickByMap(pMap);
+
+        if (App_VehicleSendRequestByMap(pMap) != 0)
+        {
+            s_vehicleGroup[groupIndex].result = APP_VEHICLE_RESULT_FAIL;
+            continue;
+        }
+
+        pPending->groupIndex = groupIndex;
+        pPending->startTick  = xTaskGetTickCount();
+        pPending->pMap       = pMap;
+        pPending->used       = 1U;
+        s_vehicleGroup[groupIndex].pendingCount++;
+
+        if ((i + 1U) < cmdCount)
+        {
+            vTaskDelay(pdMS_TO_TICKS(APP_VEHICLE_LINK_SEND_GAP_MS));
+        }
     }
 
-    pPending->voiceCmd   = pReq->voiceCmd;
-    pPending->startTick  = xTaskGetTickCount();
-    pPending->pMap       = pMap;
-    pPending->used       = 1U;
+    if (s_vehicleGroup[groupIndex].pendingCount == 0U)
+    {
+        App_VehicleFinishGroup(groupIndex);
+    }
 }
 
 /**
@@ -648,8 +862,7 @@ void App_VehiclePollPending(void)
         else if ((nowTick - s_vehiclePending[i].startTick) >=
                  pdMS_TO_TICKS(APP_VEHICLE_PENDING_TIMEOUT_MS))
         {
-            LOG_WARN("Vehicle pending timeout, voice cmd: 0x%02X",
-                     s_vehiclePending[i].voiceCmd);
+            LOG_WARN("Vehicle pending timeout, group: %d", s_vehiclePending[i].groupIndex);
             App_VehicleFinishPending(&s_vehiclePending[i], APP_VEHICLE_RESULT_TIMEOUT);
         }
     }

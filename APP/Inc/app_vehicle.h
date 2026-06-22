@@ -50,6 +50,7 @@ typedef enum
     APP_VEHICLE_CMD_AC_HEAT_ON,          /* 空调制热。                 */
     APP_VEHICLE_CMD_AC_COOL_ON,          /* 空调制冷。                 */
     APP_VEHICLE_CMD_AC_OFF,              /* 关闭空调。                 */
+    APP_VEHICLE_CMD_AC_FAN_OFF,          /* 关闭空调风机。             */
     APP_VEHICLE_CMD_AC_LEVEL1,           /* 空调一档。                 */
     APP_VEHICLE_CMD_AC_LEVEL2,           /* 空调二档。                 */
     APP_VEHICLE_CMD_AC_LEVEL3,           /* 空调三档。                 */
