@@ -13,6 +13,25 @@
 
 #define LOG_TAG "voice"
 
+#define APP_VOICE_TIME_PERIOD_AM        0x00U   /* 上午：06:00~11:59。 */
+#define APP_VOICE_TIME_PERIOD_PM        0x01U   /* 下午：12:00~17:59。 */
+#define APP_VOICE_TIME_PERIOD_DAWN      0x02U   /* 凌晨：00:00~05:59。 */
+#define APP_VOICE_TIME_PERIOD_NIGHT     0x03U   /* 晚上：18:00~23:59。 */
+#define APP_VOICE_CTRL_QUEUE_LEN        4U      /* 控制类语音命令串行等待队列长度。 */
+
+typedef struct
+{
+    uint8_t             voiceCmd;        /* 语音模块原始命令码，用于最终回复对应词条。 */
+    AppVehicleCommand_t vehicleCmd;      /* 内部车辆控制命令，由 VehicleTask 执行。 */
+} AppVoiceCtrlItem_t;
+
+static uint8_t s_voiceControlPending = 0U;       /* 车辆控制命令等待 VehicleTask 反馈结果标志。 */
+static uint8_t s_voicePendingCmd = 0U;            /* 当前等待回复的语音原始命令码。 */
+static AppVoiceCtrlItem_t s_voiceCtrlQueue[APP_VOICE_CTRL_QUEUE_LEN]; /* 控制命令待执行队列。 */
+static uint8_t s_voiceCtrlQueueHead = 0U;         /* 待执行队列读指针。 */
+static uint8_t s_voiceCtrlQueueTail = 0U;         /* 待执行队列写指针。 */
+static uint8_t s_voiceCtrlQueueCount = 0U;        /* 待执行队列当前元素个数。 */
+
 /**
  * @brief  初始化语音业务模块。
  * @retval 无。
@@ -136,6 +155,97 @@ static uint8_t App_VoiceMapRespCode(AppVehicleResult_t result)
 }
 
 /**
+ * @brief  判断语音命令是否为信息查询类命令。
+ * @param  voiceCmd 语音模块原始命令码。
+ * @return 1 = 天气/日期/时间查询，0 = 其他命令。
+ */
+static uint8_t App_VoiceIsInfoQuery(uint8_t voiceCmd)
+{
+    return (uint8_t)((voiceCmd == APP_VOICE_CMD_WEATHER_QUERY) ||
+                     (voiceCmd == APP_VOICE_CMD_DATE_QUERY) ||
+                     (voiceCmd == APP_VOICE_CMD_TIME_QUERY));
+}
+
+/**
+ * @brief  将控制类语音命令加入待执行队列。
+ * @param  voiceCmd   语音模块原始命令码。
+ * @param  vehicleCmd 内部车辆控制命令。
+ * @return 1 = 入队成功，0 = 队列已满。
+ */
+static uint8_t App_VoiceCtrlQueuePush(uint8_t voiceCmd,
+                                      AppVehicleCommand_t vehicleCmd)
+{
+    if (s_voiceCtrlQueueCount >= APP_VOICE_CTRL_QUEUE_LEN)
+    {
+        return 0U;
+    }
+
+    s_voiceCtrlQueue[s_voiceCtrlQueueTail].voiceCmd = voiceCmd;
+    s_voiceCtrlQueue[s_voiceCtrlQueueTail].vehicleCmd = vehicleCmd;
+    s_voiceCtrlQueueTail++;
+    if (s_voiceCtrlQueueTail >= APP_VOICE_CTRL_QUEUE_LEN)
+    {
+        s_voiceCtrlQueueTail = 0U;
+    }
+    s_voiceCtrlQueueCount++;
+
+    return 1U;
+}
+
+/**
+ * @brief  从待执行队列取出下一条控制命令。
+ * @param  pItem 输出队列元素。
+ * @return 1 = 取出成功，0 = 队列为空。
+ */
+static uint8_t App_VoiceCtrlQueuePop(AppVoiceCtrlItem_t *pItem)
+{
+    if ((pItem == NULL) || (s_voiceCtrlQueueCount == 0U))
+    {
+        return 0U;
+    }
+
+    *pItem = s_voiceCtrlQueue[s_voiceCtrlQueueHead];
+    s_voiceCtrlQueueHead++;
+    if (s_voiceCtrlQueueHead >= APP_VOICE_CTRL_QUEUE_LEN)
+    {
+        s_voiceCtrlQueueHead = 0U;
+    }
+    s_voiceCtrlQueueCount--;
+
+    return 1U;
+}
+
+/**
+ * @brief  提交一条控制命令给 VehicleTask，并记录当前等待回复的语音命令。
+ * @param  pItem 控制命令队列元素。
+ * @retval 无。
+ */
+static void App_VoiceStartControl(const AppVoiceCtrlItem_t *pItem)
+{
+    AppVehicleResult_t submitResult;
+    uint8_t respCode;
+    uint32_t notifyValue = 0U;
+
+    if (pItem == NULL)
+    {
+        return;
+    }
+
+    xTaskNotifyWait(0U, 0xFFFFFFFFUL, &notifyValue, 0U);
+    s_voicePendingCmd = pItem->voiceCmd;
+    s_voiceControlPending = 1U;
+
+    submitResult = App_ControlSubmit(pItem->vehicleCmd, xTaskGetCurrentTaskHandle());
+    if (submitResult != APP_VEHICLE_RESULT_OK)
+    {
+        s_voiceControlPending = 0U;
+        s_voicePendingCmd = 0U;
+        respCode = App_VoiceMapRespCode(submitResult);
+        Voice_SendFrame(pItem->voiceCmd, respCode, NULL);
+    }
+}
+
+/**
  * @brief  处理需要携带数据返回的语音信息查询命令。
  * @param  voiceCmd 语音模块原始命令码，例如天气/日期/时间查询。
  */
@@ -143,6 +253,7 @@ static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
 {
     uint8_t data[5] = {0};
     uint8_t valid = 0U;
+    uint8_t hour;
     int16_t temp;
 
     if (voiceCmd == APP_VOICE_CMD_WEATHER_QUERY)
@@ -167,11 +278,28 @@ static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
     else
     {
         /*
-         * CAN 缓存为 24 小时制；语音协议拆成上午/下午 + 0~11 小时 + 分钟。
-         * 12:xx 及以后回复下午，小时字段按协议取 12 小时制余数。
+         * CAN 缓存为 24 小时制；语音协议拆成时间段 + 0~11 小时 + 分钟。
+         * 时间段编码：00=上午，01=下午，02=凌晨，03=晚上。
          */
-        data[0] = (g_vehicleStatus.tbox_hour >= 12U) ? 1U : 0U;
-        data[1] = g_vehicleStatus.tbox_hour % 12U;
+        hour = g_vehicleStatus.tbox_hour;
+        if (hour < 6U)
+        {
+            data[0] = APP_VOICE_TIME_PERIOD_DAWN;
+        }
+        else if (hour < 12U)
+        {
+            data[0] = APP_VOICE_TIME_PERIOD_AM;
+        }
+        else if (hour < 18U)
+        {
+            data[0] = APP_VOICE_TIME_PERIOD_PM;
+        }
+        else
+        {
+            data[0] = APP_VOICE_TIME_PERIOD_NIGHT;
+        }
+
+        data[1] = hour % 12U;
         data[2] = g_vehicleStatus.tbox_min;
     }
 
@@ -189,23 +317,55 @@ static void App_VoiceReplyInfoQuery(uint8_t voiceCmd)
 }
 
 /**
+ * @brief  轮询车辆控制异步执行结果，并在完成时回复语音模块。
+ * @retval 无。
+ * @note   由 App_VoiceTask 周期调用。VehicleTask 完成 3 秒状态确认后通过任务通知
+ *         把结果发回语音任务，本函数负责把结果映射为语音协议应答码。
+ */
+void App_VoicePollControlResult(void)
+{
+    uint32_t notifyValue = 0U;
+    uint8_t respCode;
+    AppVoiceCtrlItem_t nextItem;
+
+    if (s_voiceControlPending == 0U)
+    {
+        return;
+    }
+
+    if (xTaskNotifyWait(0U, 0xFFFFFFFFUL, &notifyValue, 0U) == pdPASS)
+    {
+        respCode = App_VoiceMapRespCode((AppVehicleResult_t)notifyValue);
+        Voice_SendFrame(s_voicePendingCmd, respCode, NULL);
+        s_voiceControlPending = 0U;
+        s_voicePendingCmd = 0U;
+
+        if (App_VoiceCtrlQueuePop(&nextItem) != 0U)
+        {
+            App_VoiceStartControl(&nextItem);
+        }
+    }
+}
+
+/**
  * @brief  处理一帧语音识别命令。
  * @param  pFrame 语音 UART 层解析出的完整识别帧。
  * @note   流程：
  *         1. 查表：语音命令码 → 内部统一控制命令
- *         2. 委托 VehicleTask 执行（同步等待，最多 500ms）
- *         3. 结果 → 应答码 → 回复语音芯片
+ *         2. 查询类命令直接回复缓存信息
+ *         3. 控制类命令异步提交给 VehicleTask，后续由 App_VoicePollControlResult() 回复
  */
 void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
 {
     AppVehicleCommand_t vehicleCmd;
-    AppVehicleResult_t  result;
-    uint8_t             respCode;
+    AppVoiceCtrlItem_t  item;
 
     if (pFrame == NULL)
     {
         return;
     }
+
+    App_VoicePollControlResult();
 
     LOG_INFO("Voice cmd: 0x%02X", pFrame->cmd);
 
@@ -217,19 +377,26 @@ void App_VoiceProcessFrame(const VoiceFrame_t *pFrame)
         return;
     }
 
-    /******************** ② 委托 VehicleTask 执行（最多等 500ms） ********************/
-    result = App_ControlRequest(vehicleCmd, pdMS_TO_TICKS(500U));
-
-    /******************** ③ 结果 → 应答 → 回复语音芯片 ********************/
-    if ((pFrame->cmd != APP_VOICE_CMD_WEATHER_QUERY) &&
-        (pFrame->cmd != APP_VOICE_CMD_DATE_QUERY) &&
-        (pFrame->cmd != APP_VOICE_CMD_TIME_QUERY))
+    /******************** ② 查询类命令直接回复缓存信息 ********************/
+    if (App_VoiceIsInfoQuery(pFrame->cmd) != 0U)
     {
-
-        
-        respCode = App_VoiceMapRespCode(result);
-        Voice_SendFrame(pFrame->cmd, respCode, NULL);
-    }else{
         App_VoiceReplyInfoQuery(pFrame->cmd);
+        return;
     }
+
+    /******************** ③ 控制类命令串行排队，保证语音回复顺序与识别顺序一致 ********************/
+    if (s_voiceControlPending != 0U)
+    {
+        if (App_VoiceCtrlQueuePush(pFrame->cmd, vehicleCmd) == 0U)
+        {
+            LOG_WARN("Voice control queue full, reject cmd: 0x%02X", pFrame->cmd);
+            Voice_SendFrame(pFrame->cmd, VOICE_RESP_FAIL, NULL);
+        }
+        return;
+    }
+
+    /******************** ④ 没有命令执行中，立即启动当前控制命令 ********************/
+    item.voiceCmd = pFrame->cmd;
+    item.vehicleCmd = vehicleCmd;
+    App_VoiceStartControl(&item);
 }

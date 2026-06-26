@@ -169,6 +169,8 @@ static void App_VoiceTask(void *pvParameters)
 
     while (1)
     {
+        App_VoicePollControlResult();
+
         if (xQueueReceive(Voice_GetRxQueue(), &frame, pdMS_TO_TICKS(100U)) == pdPASS)
         {
             App_VoiceProcessFrame(&frame);

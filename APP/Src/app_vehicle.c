@@ -5,7 +5,8 @@
  *          集中执行安全判断、CAN 发送、结果返回。
  *
  * 请求链路：
- *   上层 → App_ControlRequest() → 队列 → VehicleTask → 执行 → 任务通知 → 上层
+ *   同步：上层 → App_ControlRequest() → 队列 → VehicleTask → 执行 → 任务通知 → 上层
+ *   异步：上层 → App_ControlSubmit()  → 队列 → VehicleTask → 执行 → 任务通知 → 上层轮询
  */
 
 #include "app_vehicle.h"
@@ -44,8 +45,8 @@ typedef struct
 #define APP_VEHICLE_REQ_QUEUE_LENGTH        4U
 #define APP_VEHICLE_REQ_SEND_TIMEOUT_MS     20U
 
-/** RX 反馈等待时间（ms），给 BCM/ACU/SRCM 至少一个周期的反应时间 */
-#define APP_VEHICLE_RX_WAIT_MS              150U
+/** RX 反馈确认时间（ms），3 秒内持续等待目标状态位达到期望值。 */
+#define APP_VEHICLE_STATUS_CONFIRM_MS       3000U
 
 static QueueHandle_t s_vehicleReqQueue = NULL;
 
@@ -80,7 +81,7 @@ static const AppVehicleCmdMap_t s_vehicleCmdMap[] =
     { APP_VEHICLE_CMD_READING_LIGHT_ON,  APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_ON, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),        1U },
     { APP_VEHICLE_CMD_READING_LIGHT_OFF, APP_VEHICLE_CAN_TARGET_BCM,  6U, CAN_SET_2BIT(CAN_BCM_READING_LIGHT_OFF, CAN_BCM_READING_LIGHT_POS), offsetof(VehicleStatus_t, reading_light_out),       0U },
 
-    { APP_VEHICLE_CMD_SUNROOF_FAN_ON,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
+    { APP_VEHICLE_CMD_SUNROOF_FAN_ON,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_OFF,   APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_OFF, CAN_BCM_SUNROOF_FAN_POS),    offsetof(VehicleStatus_t, sr_fan_level),             0U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_L1,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL1, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             1U },
     { APP_VEHICLE_CMD_SUNROOF_FAN_L2,    APP_VEHICLE_CAN_TARGET_SRCM, 5U, CAN_SET_3BIT(CAN_BCM_SUNROOF_FAN_LEVEL2, CAN_BCM_SUNROOF_FAN_POS), offsetof(VehicleStatus_t, sr_fan_level),             2U },
@@ -126,32 +127,185 @@ static uint8_t App_VehicleReadStatusU8(uint16_t offset)
 }
 
 /**
- * @brief  等待指定类型的 CAN 反馈报文刷新。
- * @param  pRxTick   指向对应反馈报文更新时间戳，例如 bcm_tbox1_tick / acu_ivi_tick / srcm_tick。
- * @param  oldTick   发送控制命令前记录的旧时间戳。
- * @param  timeoutMs 最长等待时间，单位 ms。
- * @return pdTRUE = 等到新的反馈报文, pdFALSE = 超时未等到。
- * @note   该函数用于避免读取旧反馈状态：
- *         发送命令前先保存 oldTick，发送后等待 CAN_RxTask 解析新反馈帧并更新 tick。
+ * @brief  将控制帧数据域清为“无请求”。
+ * @param  data 8 字节 CAN 数据域。
+ * @retval 无。
  */
-static BaseType_t App_VehicleWaitRxUpdate(const uint32_t *pRxTick,
-                                          uint32_t oldTick,
-                                          uint32_t timeoutMs)
+static void App_VehicleClearRequestData(uint8_t *data)
 {
-    TickType_t startTick;     /* 进入等待时的系统 tick，用于计算超时。 */
+    uint8_t i;
 
-    if (pRxTick == NULL)
+    if (data == NULL)
+    {
+        return;
+    }
+
+    for (i = 0U; i < 8U; i++)
+    {
+        data[i] = 0U;
+    }
+}
+
+/**
+ * @brief  为复合语音命令补充关联控制请求。
+ * @param  pMap 命令映射表项。
+ * @param  data 8 字节 CAN 数据域，已填入主请求字段。
+ * @retval 无。
+ * @note   某些语音词条在协议上需要同时下发多个请求位，例如关闭大灯同时关闭远光、
+ *         洗涤同时打开低速雨刮、空调模式同时带默认风速。
+ */
+static void App_VehicleApplyLinkedRequest(const AppVehicleCmdMap_t *pMap,
+                                          uint8_t *data)
+{
+    if ((pMap == NULL) || (data == NULL))
+    {
+        return;
+    }
+
+    switch (pMap->cmd)
+    {
+        case APP_VEHICLE_CMD_LOW_BEAM_OFF:
+            data[3] |= CAN_SET_2BIT(CAN_BCM_LIGHT_OFF, CAN_BCM_HIGH_BEAM_POS);
+            break;
+
+        case APP_VEHICLE_CMD_WASHER_ON:
+            data[6] |= CAN_SET_3BIT(CAN_BCM_WIPER_LOW, CAN_BCM_FRONT_WIPER_POS);
+            break;
+
+        case APP_VEHICLE_CMD_AC_HEAT_ON:
+        case APP_VEHICLE_CMD_AC_COOL_ON:
+            data[0] = CAN_ACU_FAN_LEVEL2;
+            break;
+
+        case APP_VEHICLE_CMD_AC_OFF:
+            data[0] = CAN_ACU_FAN_OFF;
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief  检查主状态位和关联状态位是否都达到期望。
+ * @param  pMap 命令映射表项。
+ * @return 1 = 状态满足命令成功条件，0 = 未满足。
+ */
+static uint8_t App_VehicleIsExpectedStatus(const AppVehicleCmdMap_t *pMap)
+{
+    if (pMap == NULL)
+    {
+        return 0U;
+    }
+
+    if (App_VehicleReadStatusU8(pMap->statusOffset) != pMap->expected)
+    {
+        return 0U;
+    }
+
+    switch (pMap->cmd)
+    {
+        case APP_VEHICLE_CMD_LOW_BEAM_OFF:
+            return (uint8_t)(g_vehicleStatus.high_beam_light_status == 0U);
+
+        case APP_VEHICLE_CMD_WASHER_ON:
+            return (uint8_t)(g_vehicleStatus.front_wiper_status == 2U);
+
+        case APP_VEHICLE_CMD_AC_HEAT_ON:
+        case APP_VEHICLE_CMD_AC_COOL_ON:
+            return (uint8_t)(g_vehicleStatus.ac_fan_gear == 2U);
+
+        case APP_VEHICLE_CMD_AC_OFF:
+            return (uint8_t)(g_vehicleStatus.ac_fan_gear == 0U);
+
+        default:
+            return 1U;
+    }
+}
+
+/**
+ * @brief  根据命令目标发送 IVI 控制帧。
+ * @param  pMap 命令映射表项，用于选择 IVI_BCM 或 IVI_ACU。
+ * @param  data 8 字节 CAN 数据域，调用方负责填入请求值或全 0 清请求值。
+ * @return 0 = 发送成功，其他 = 发送失败。
+ */
+static int App_VehicleSendByMapTarget(const AppVehicleCmdMap_t *pMap,
+                                      uint8_t *data)
+{
+    if ((pMap == NULL) || (data == NULL))
+    {
+        return -1;
+    }
+
+    if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        return APP_CAN_SendIVI_ACU(data);
+    }
+
+    return APP_CAN_SendIVI_BCM(data);
+}
+
+/**
+ * @brief  获取命令对应反馈报文的更新时间戳指针。
+ * @param  pMap 命令映射表项。
+ * @return 对应反馈 tick 指针；参数异常时返回 NULL。
+ */
+static const uint32_t *App_VehicleGetRxTickPtr(const AppVehicleCmdMap_t *pMap)
+{
+    if (pMap == NULL)
+    {
+        return NULL;
+    }
+
+    if (pMap->target == APP_VEHICLE_CAN_TARGET_BCM)
+    {
+        return &g_vehicleStatus.bcm_tbox1_tick;
+    }
+    else if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
+    {
+        return &g_vehicleStatus.acu_ivi_tick;
+    }
+    else
+    {
+        return &g_vehicleStatus.srcm_tick;
+    }
+}
+
+/**
+ * @brief  3 秒内持续等待目标反馈状态位达到期望值。
+ * @param  pMap      命令映射表项，提供目标状态字段和期望值。
+ * @param  pRxTick   对应反馈报文更新时间戳指针。
+ * @param  oldTick   发送控制命令前记录的旧时间戳，用于忽略旧反馈。
+ * @param  timeoutMs 最长等待时间，单位 ms。
+ * @return pdTRUE = 目标状态位在超时前达到期望值，pdFALSE = 超时未达到。
+ * @note   等待期间 CAN 接收仍由 CAN_RxTask 异步解析；本函数只观察缓存状态，
+ *         无关 ID 不影响结果，同类反馈状态暂未到位时继续等待。
+ */
+static BaseType_t App_VehicleWaitExpectedStatus(const AppVehicleCmdMap_t *pMap,
+                                                const uint32_t *pRxTick,
+                                                uint32_t oldTick,
+                                                uint32_t timeoutMs)
+{
+    TickType_t startTick;     /* 进入等待时的系统 tick，用于计算 3 秒确认窗口。 */
+    uint32_t lastTick;        /* 已处理过的反馈 tick，避免重复判断同一帧。 */
+
+    if ((pMap == NULL) || (pRxTick == NULL))
     {
         return pdFALSE;
     }
 
     startTick = xTaskGetTickCount();
+    lastTick = oldTick;
 
     while ((xTaskGetTickCount() - startTick) < pdMS_TO_TICKS(timeoutMs))
     {
-        if (*pRxTick != oldTick)
+        if (*pRxTick != lastTick)
         {
-            return pdTRUE;
+            lastTick = *pRxTick;
+            if (App_VehicleIsExpectedStatus(pMap) != 0U)
+            {
+                return pdTRUE;
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(10U));
@@ -169,6 +323,7 @@ static AppVehicleResult_t App_VehicleExecuteByMap(const AppVehicleCmdMap_t *pMap
     uint32_t oldTick;
     const uint32_t *pRxTick;
     int sendRet;
+    AppVehicleResult_t result;
 
     if (pMap == NULL)
     {
@@ -176,42 +331,36 @@ static AppVehicleResult_t App_VehicleExecuteByMap(const AppVehicleCmdMap_t *pMap
     }
 
     data[pMap->txByte] = pMap->txValue;
-
-    if (pMap->target == APP_VEHICLE_CAN_TARGET_BCM)
-    {
-        pRxTick = &g_vehicleStatus.bcm_tbox1_tick;
-        oldTick = g_vehicleStatus.bcm_tbox1_tick;
-        sendRet = APP_CAN_SendIVI_BCM(data);
-    }
-    else if (pMap->target == APP_VEHICLE_CAN_TARGET_ACU)
-    {
-        pRxTick = &g_vehicleStatus.acu_ivi_tick;
-        oldTick = g_vehicleStatus.acu_ivi_tick;
-        sendRet = APP_CAN_SendIVI_ACU(data);
-    }
-    else
-    {
-        pRxTick = &g_vehicleStatus.srcm_tick;
-        oldTick = g_vehicleStatus.srcm_tick;
-        sendRet = APP_CAN_SendIVI_BCM(data);
-    }
+    App_VehicleApplyLinkedRequest(pMap, data);
+    pRxTick = App_VehicleGetRxTickPtr(pMap);
+    oldTick = (pRxTick != NULL) ? *pRxTick : 0U;
+    sendRet = App_VehicleSendByMapTarget(pMap, data);
 
     if (sendRet != 0)
     {
         return APP_VEHICLE_RESULT_FAIL;
     }
 
-    if (App_VehicleWaitRxUpdate(pRxTick, oldTick, APP_VEHICLE_RX_WAIT_MS) != pdTRUE)
+    if (App_VehicleWaitExpectedStatus(pMap,
+                                      pRxTick,
+                                      oldTick,
+                                      APP_VEHICLE_STATUS_CONFIRM_MS) == pdTRUE)
     {
+        result = APP_VEHICLE_RESULT_OK;
+    }
+    else
+    {
+        result = APP_VEHICLE_RESULT_FAIL;
+    }
+
+    App_VehicleClearRequestData(data);
+    if (App_VehicleSendByMapTarget(pMap, data) != 0)
+    {
+        LOG_WARN("Vehicle clear request failed, cmd: %d", pMap->cmd);
         return APP_VEHICLE_RESULT_FAIL;
     }
 
-    if (App_VehicleReadStatusU8(pMap->statusOffset) == pMap->expected)
-    {
-        return APP_VEHICLE_RESULT_OK;
-    }
-
-    return APP_VEHICLE_RESULT_FAIL;
+    return result;
 }
 
 /* ===== 初始化 ===== */
@@ -334,4 +483,35 @@ AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
     }
 
     return (AppVehicleResult_t)notifyValue;
+}
+
+/**
+ * @brief  异步提交控制请求，由 VehicleTask 执行完成后通知 requester。
+ * @param  cmd       控制命令。
+ * @param  requester 接收执行结果通知的任务句柄。
+ * @return OK = 已入队，TIMEOUT = 队列满，NOT_READY = 模块未初始化。
+ * @note   该接口不阻塞等待执行结果，适合语音任务在 3 秒确认窗口内继续处理新语音帧。
+ */
+AppVehicleResult_t App_ControlSubmit(AppVehicleCommand_t cmd,
+                                     TaskHandle_t requester)
+{
+    AppVehicleRequest_t req;
+
+    if (s_vehicleReqQueue == NULL)
+    {
+        return APP_VEHICLE_RESULT_NOT_READY;
+    }
+
+    req.cmd       = cmd;
+    req.requester = requester;
+
+    if (xQueueSend(s_vehicleReqQueue,
+                   &req,
+                   pdMS_TO_TICKS(APP_VEHICLE_REQ_SEND_TIMEOUT_MS)) != pdPASS)
+    {
+        LOG_WARN("Vehicle req queue full, cmd: %d", cmd);
+        return APP_VEHICLE_RESULT_TIMEOUT;
+    }
+
+    return APP_VEHICLE_RESULT_OK;
 }

@@ -88,4 +88,11 @@ void App_VoiceInit(void);
  */
 void App_VoiceProcessFrame(const VoiceFrame_t *pFrame);
 
+/**
+ * @brief  轮询车辆控制异步执行结果。
+ * @retval 无。
+ * @note   由语音任务循环调用，收到 VehicleTask 执行结果通知后回复语音模块。
+ */
+void App_VoicePollControlResult(void);
+
 #endif /* __APP_VOICE_H__ */

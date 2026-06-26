@@ -1,9 +1,9 @@
 /**
  * @file    app_vehicle.h
  * @brief   车辆控制模块
- * @details 提供统一的控制请求入口 App_ControlRequest()。
- *          语音、按键、BLE 等任何上层任务都通过此接口发起车辆控制。
- *          内部通过 FreeRTOS 队列 + 任务通知实现同步等待。
+ * @details 提供同步控制入口 App_ControlRequest() 和异步控制入口 App_ControlSubmit()。
+ *          语音、按键、BLE 等任何上层任务都通过队列把请求交给 VehicleTask。
+ *          VehicleTask 执行完成后通过 FreeRTOS 任务通知返回结果。
  */
 
 #ifndef __APP_VEHICLE_H__
@@ -98,6 +98,16 @@ QueueHandle_t Vehicle_GetRxQueue(void);
  */
 AppVehicleResult_t App_ControlRequest(AppVehicleCommand_t cmd,
                                       TickType_t timeoutTicks);
+
+/**
+ * @brief  异步提交控制请求。
+ * @param  cmd       车辆控制命令。
+ * @param  requester 接收 VehicleTask 执行结果通知的任务句柄。
+ * @return OK = 已入队，TIMEOUT = 队列满，NOT_READY = 模块未就绪。
+ * @note   VehicleTask 执行完成后通过任务通知把结果发给 requester。
+ */
+AppVehicleResult_t App_ControlSubmit(AppVehicleCommand_t cmd,
+                                     TaskHandle_t requester);
 
 /**
  * @brief  执行车辆控制命令。
